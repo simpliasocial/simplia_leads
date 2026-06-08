@@ -9,6 +9,20 @@ const corsHeaders = {
 
 type SupabaseClient = ReturnType<typeof createClient>;
 type UnknownRecord = Record<string, any>;
+type AuthContext = {
+    userId: string;
+    role: string;
+};
+type MetaAdsConfigRow = {
+    account_id: number;
+    ad_account_id: string;
+    access_token: string;
+    token_last_four: string;
+    graph_api_version: string;
+    enabled: boolean;
+    configured_at?: string | null;
+    updated_at?: string | null;
+};
 
 const CAMPAIGN_FIELDS = "id,name,status,effective_status,objective,created_time,start_time,stop_time";
 const INSIGHT_FIELDS = [
@@ -87,9 +101,19 @@ const parseJsonHeader = (value: string | null) => {
     }
 };
 
-const normalizeVersion = (value: string | undefined) => {
+const normalizeVersion = (value: unknown) => {
     const version = cleanText(value || "v20.0");
     return version.startsWith("v") ? version : `v${version}`;
+};
+
+const normalizeAdAccountId = (value: unknown) =>
+    cleanText(value)
+        .replace(/^act_/i, "")
+        .replace(/\D/g, "");
+
+const parseAccountId = (value: unknown) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
 };
 
 const normalizeDateKey = (value: unknown, fallback: string) => {
@@ -106,7 +130,7 @@ const isoOrNull = (value: unknown) => {
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
-const getUserRole = async (supabase: SupabaseClient, authHeader: string | null) => {
+const getAuthContext = async (supabase: SupabaseClient, authHeader: string | null): Promise<AuthContext | null> => {
     const jwt = cleanText(authHeader).replace(/^Bearer\s+/i, "");
     if (!jwt) return null;
 
@@ -120,11 +144,101 @@ const getUserRole = async (supabase: SupabaseClient, authHeader: string | null) 
         .maybeSingle();
 
     if (error) return null;
-    return cleanText((data as { role?: unknown } | null)?.role) || null;
+    const role = cleanText((data as { role?: unknown } | null)?.role);
+    return role ? { userId: userData.user.id, role } : null;
 };
 
 const canReadMetaAds = (role: string | null) =>
     role === "platform_admin" || role === "company_admin";
+
+const canConfigureMetaAds = canReadMetaAds;
+
+const toPublicMetaAdsConfig = (row?: MetaAdsConfigRow | null) => ({
+    configured: Boolean(row),
+    accountId: parseAccountId(row?.account_id),
+    adAccountId: cleanText(row?.ad_account_id),
+    tokenLastFour: cleanText(row?.token_last_four),
+    hasAccessToken: Boolean(row?.access_token),
+    graphApiVersion: normalizeVersion(row?.graph_api_version),
+    enabled: row?.enabled ?? true,
+    configuredAt: row?.configured_at || null,
+    updatedAt: row?.updated_at || null,
+});
+
+const loadMetaAdsConfig = async (supabase: SupabaseClient, accountId: number) => {
+    const queryConfig = async (targetAccountId: number) => {
+        const { data, error } = await supabase
+            .schema("cw")
+            .from("meta_ads_configs")
+            .select("*")
+            .eq("account_id", targetAccountId)
+            .maybeSingle();
+
+        if (error) throw error;
+        return data as MetaAdsConfigRow | null;
+    };
+
+    const accountConfig = await queryConfig(accountId);
+    if (accountConfig || accountId === 0) return accountConfig;
+    return queryConfig(0);
+};
+
+const getMetaAdsConfig = async (
+    supabase: SupabaseClient,
+    auth: AuthContext,
+    body: UnknownRecord,
+) => {
+    if (!canReadMetaAds(auth.role)) {
+        return jsonResponse({ ok: false, error: "No tienes acceso a Meta Ads." }, { status: 403 });
+    }
+
+    const accountId = parseAccountId(body.accountId ?? body.account_id);
+    const config = await loadMetaAdsConfig(supabase, accountId);
+    return jsonResponse({ ok: true, ...toPublicMetaAdsConfig(config) });
+};
+
+const saveMetaAdsConfig = async (
+    supabase: SupabaseClient,
+    auth: AuthContext,
+    body: UnknownRecord,
+) => {
+    if (!canConfigureMetaAds(auth.role)) {
+        return jsonResponse({ ok: false, error: "No tienes permiso para configurar Meta Ads." }, { status: 403 });
+    }
+
+    const input = asObject(body.config || body);
+    const accountId = parseAccountId(input.accountId ?? input.account_id);
+    const existing = await loadMetaAdsConfig(supabase, accountId);
+    const adAccountId = normalizeAdAccountId(input.adAccountId ?? input.ad_account_id ?? existing?.ad_account_id);
+    const accessTokenInput = cleanText(input.accessToken ?? input.access_token);
+    const accessToken = accessTokenInput || existing?.access_token || "";
+
+    if (!adAccountId) {
+        return jsonResponse({ ok: false, error: "Completa el ID de cuenta publicitaria." }, { status: 400 });
+    }
+    if (!accessToken) {
+        return jsonResponse({ ok: false, error: "Completa el Bearer Token de Meta Ads." }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
+        .schema("cw")
+        .from("meta_ads_configs")
+        .upsert({
+            account_id: accountId,
+            ad_account_id: adAccountId,
+            access_token: accessToken,
+            token_last_four: accessToken.slice(-4),
+            graph_api_version: normalizeVersion(input.graphApiVersion ?? input.graph_api_version ?? existing?.graph_api_version),
+            enabled: input.enabled !== false,
+            configured_by: auth.userId,
+            configured_at: new Date().toISOString(),
+        }, { onConflict: "account_id" })
+        .select("*")
+        .single();
+
+    if (error) throw error;
+    return jsonResponse({ ok: true, ...toPublicMetaAdsConfig(data as MetaAdsConfigRow) });
+};
 
 const graphFetchAll = async (
     path: string,
@@ -498,20 +612,34 @@ serve(async (req) => {
     try {
         const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
         const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-        const adAccountId = cleanText(Deno.env.get("META_AD_ACCOUNT_ID"));
-        const token = cleanText(Deno.env.get("META_SYSTEM_USER_TOKEN"));
-        const version = normalizeVersion(Deno.env.get("META_GRAPH_API_VERSION"));
         const ttlSeconds = Math.max(60, Number(Deno.env.get("META_CACHE_TTL_SECONDS") || 900));
 
         if (!supabaseUrl || !serviceRoleKey) throw new Error("Missing Supabase service role environment variables.");
-        if (!adAccountId || !token) throw new Error("Missing Meta Ads secrets.");
 
         const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
-        const role = await getUserRole(supabase, req.headers.get("Authorization"));
-        if (!role) return jsonResponse({ ok: false, error: "No autenticado." }, { status: 401 });
-        if (!canReadMetaAds(role)) return jsonResponse({ ok: false, error: "No tienes acceso a Meta Ads." }, { status: 403 });
-
         const body = await req.json().catch(() => ({}));
+        const auth = await getAuthContext(supabase, req.headers.get("Authorization"));
+        if (!auth) return jsonResponse({ ok: false, error: "No autenticado." }, { status: 401 });
+        if (!canReadMetaAds(auth.role)) return jsonResponse({ ok: false, error: "No tienes acceso a Meta Ads." }, { status: 403 });
+
+        const action = cleanText(body.action || body.mode);
+        if (action === "get_config") return getMetaAdsConfig(supabase, auth, body);
+        if (action === "save_config") return saveMetaAdsConfig(supabase, auth, body);
+
+        const accountId = parseAccountId(body.accountId ?? body.account_id);
+        const configured = await loadMetaAdsConfig(supabase, accountId);
+        if (configured?.enabled === false) {
+            throw new Error("Meta Ads esta desactivado para esta cuenta.");
+        }
+        const activeConfig = configured;
+        const adAccountId = normalizeAdAccountId(activeConfig?.ad_account_id || Deno.env.get("META_AD_ACCOUNT_ID"));
+        const token = cleanText(activeConfig?.access_token || Deno.env.get("META_SYSTEM_USER_TOKEN"));
+        const version = normalizeVersion(activeConfig?.graph_api_version || Deno.env.get("META_GRAPH_API_VERSION"));
+
+        if (!adAccountId || !token) {
+            throw new Error("Meta Ads no esta configurado. Guarda la cuenta publicitaria y token desde Configurar campañas.");
+        }
+
         const range = {
             since: normalizeDateKey(body.since, new Date(startedAt.getFullYear(), startedAt.getMonth(), 1).toISOString().slice(0, 10)),
             until: normalizeDateKey(body.until, startedAt.toISOString().slice(0, 10)),

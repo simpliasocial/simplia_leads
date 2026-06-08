@@ -9,6 +9,7 @@ import {
     Megaphone,
     RefreshCw,
     Search,
+    SlidersHorizontal,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -24,8 +25,12 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import type { DashboardFilters } from "@/domain/dashboard";
+import { canConfigureMetaAds } from "@/domain/auth/permissions";
+import { useAuth } from "@/context/useAuth";
 import { formatBusinessLabel } from "@/lib/displayCopy";
 import { useMetaCampaignInsights } from "../hooks/useMetaCampaignInsights";
+import { useMetaAdsConfig } from "../hooks/useMetaAdsConfig";
+import { MetaAdsConfigDialog } from "./MetaAdsConfigDialog";
 import {
     metaRowMatchesSearch,
     type MetaActionMetric,
@@ -133,9 +138,18 @@ const DetailRow = ({ row }: { row: MetaCampaignInsightRow }) => (
 
 export const MetaCampaignInsightsTable = ({ filters }: { filters: DashboardFilters }) => {
     const { data, isLoading, isFetching, error, refetch } = useMetaCampaignInsights(filters);
+    const { role } = useAuth();
+    const canConfigureCampaigns = canConfigureMetaAds(role);
+    const {
+        config,
+        loadingConfig,
+        saveConfig,
+        savingConfig,
+    } = useMetaAdsConfig(canConfigureCampaigns);
     const [search, setSearch] = useState("");
     const [page, setPage] = useState(1);
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
+    const [configDialogOpen, setConfigDialogOpen] = useState(false);
 
     const rows = data?.rows || [];
     const filteredRows = useMemo(
@@ -168,7 +182,21 @@ export const MetaCampaignInsightsTable = ({ filters }: { filters: DashboardFilte
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                         <Badge variant="outline">{sourceLabel(data?.source)}</Badge>
+                        {(config?.adAccountId || data?.accountId) && (
+                            <Badge variant="secondary">Cuenta {config?.adAccountId || data?.accountId}</Badge>
+                        )}
                         {data?.fetchedAt && <Badge variant="secondary">Actualizado {formatLocalDateTime(data.fetchedAt)}</Badge>}
+                        {canConfigureCampaigns && (
+                            <Button
+                                variant="default"
+                                size="sm"
+                                onClick={() => setConfigDialogOpen(true)}
+                                className="gap-2"
+                            >
+                                <SlidersHorizontal className="h-4 w-4" />
+                                Configurar campañas
+                            </Button>
+                        )}
                         <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-2">
                             {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                             Actualizar
@@ -343,6 +371,15 @@ export const MetaCampaignInsightsTable = ({ filters }: { filters: DashboardFilte
                     </>
                 )}
             </CardContent>
+
+            <MetaAdsConfigDialog
+                open={configDialogOpen}
+                onOpenChange={setConfigDialogOpen}
+                config={config}
+                loadingConfig={loadingConfig}
+                savingConfig={savingConfig}
+                onSave={saveConfig}
+            />
         </Card>
     );
 };

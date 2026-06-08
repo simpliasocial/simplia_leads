@@ -29,6 +29,14 @@ export function isAdmin(role: string | null): boolean {
   return role === 'platform_admin';
 }
 
+export function canConfigureMetaCapi(role: string | null): boolean {
+  return role === 'platform_admin';
+}
+
+export function canConfigureMetaAds(role: string | null): boolean {
+  return role === 'platform_admin' || role === 'company_admin';
+}
+
 export function canConfigureReportContext(role: string | null): boolean {
   return role === 'platform_admin' || role === 'company_admin';
 }

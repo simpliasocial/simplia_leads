@@ -206,6 +206,28 @@ const refreshDashboardDiscovery = async (
     return data;
 };
 
+const pruneDashboardLabels = async (
+    supabase: ReturnType<typeof createClient>,
+    dashboardAccountId: number,
+) => {
+    const { data: settings, error: settingsError } = await supabase
+        .schema("cw")
+        .rpc("prune_dashboard_settings_labels", { target_account_id: dashboardAccountId });
+
+    if (settingsError) throw settingsError;
+
+    const { data: references, error: referencesError } = await supabase
+        .schema("cw")
+        .rpc("prune_deleted_label_references", { target_account_id: dashboardAccountId });
+
+    if (referencesError) throw referencesError;
+
+    return {
+        settings,
+        references,
+    };
+};
+
 const uniqueIds = (values: unknown[]) =>
     Array.from(new Set(
         values
@@ -451,7 +473,11 @@ serve(async (req) => {
                 dashboardAccountId,
                 conversationRows.find((row) => row.chatwoot_account_id)?.chatwoot_account_id,
             );
-            dashboardDiscovery = await refreshDashboardDiscovery(supabase, dashboardAccountId);
+            const discovery = await refreshDashboardDiscovery(supabase, dashboardAccountId);
+            dashboardDiscovery = {
+                discovery,
+                pruning: await pruneDashboardLabels(supabase, dashboardAccountId),
+            };
         } catch (discoveryError) {
             console.warn("Dashboard discovery refresh failed after repair:", discoveryError);
         }

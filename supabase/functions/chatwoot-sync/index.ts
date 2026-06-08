@@ -349,6 +349,28 @@ const refreshDashboardDiscovery = async (
     return data;
 };
 
+const pruneDashboardLabels = async (
+    supabase: ReturnType<typeof createClient>,
+    dashboardAccountId: number,
+) => {
+    const { data: settings, error: settingsError } = await supabase
+        .schema("cw")
+        .rpc("prune_dashboard_settings_labels", { target_account_id: dashboardAccountId });
+
+    if (settingsError) throw settingsError;
+
+    const { data: references, error: referencesError } = await supabase
+        .schema("cw")
+        .rpc("prune_deleted_label_references", { target_account_id: dashboardAccountId });
+
+    if (referencesError) throw referencesError;
+
+    return {
+        settings,
+        references,
+    };
+};
+
 const buildAttributeHistoryRows = (
     conversationId: number,
     previousAttrs: Record<string, any>,
@@ -779,7 +801,11 @@ serve(async (req) => {
                     updated_at: new Date().toISOString(),
                 }, { onConflict: "cursor_name" });
 
-            stats.dashboard_discovery = await refreshDashboardDiscovery(supabase, dashboardAccountId);
+            const dashboardDiscovery = await refreshDashboardDiscovery(supabase, dashboardAccountId);
+            stats.dashboard_discovery = {
+                discovery: dashboardDiscovery,
+                pruning: await pruneDashboardLabels(supabase, dashboardAccountId),
+            };
 
             await supabase
                 .schema("cw")

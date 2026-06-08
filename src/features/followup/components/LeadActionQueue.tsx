@@ -14,15 +14,16 @@ import { useDashboardContext } from "@/context/useDashboardContext";
 import type { ResolvedConversation } from "@/context/dashboardDataTypes";
 import type { DashboardQueueLead } from "@/application/dashboard";
 import { useAuth } from "@/context/useAuth";
-import { isAdmin } from "@/domain/auth/permissions";
+import { canConfigureMetaCapi, isAdmin } from "@/domain/auth/permissions";
 import { DateRangePicker } from "@/shared/ui/dashboard/DateRangePicker";
 import { ChannelSelector } from "@/shared/ui/dashboard/ChannelSelector";
 import { TabExportMenu } from "@/features/dashboard/components/TabExportMenu";
-import { getGuayaquilDateString } from "@/lib/guayaquilTime";
+import { getGuayaquilDateString, getGuayaquilHourLabel } from "@/lib/guayaquilTime";
 import type { MinifiedConversation } from "@/services/StorageService";
 import type { Inbox } from "@/domain/lead";
 import { DateRange } from "react-day-picker";
 import {
+    cleanText,
     getAttrs,
     getLeadChannelName,
     getLeadEmail,
@@ -30,6 +31,7 @@ import {
     getLeadOperationDate,
     getLeadPhone,
     getRawLeadPhone,
+    parseAmount,
 } from "@/lib/leadDisplay";
 import {
     formatBusinessLabel,
@@ -83,6 +85,12 @@ import { FollowupQueueTable } from "./FollowupQueueTable";
 import { SalesReportPanel } from "./SalesReportPanel";
 import { HumanFlowConfigPanel } from "./HumanFlowConfigPanel";
 import { LeadMessageHistoryDialog } from "./LeadMessageHistoryDialog";
+import { MetaCapiConfigSection } from "./MetaCapiConfigSection";
+import {
+    metaCapiClient,
+    type MetaCapiEventInput,
+    type MetaCapiEventKind,
+} from "@/infrastructure/supabase/MetaCapiClient";
 
 type QueueLead = Omit<DashboardQueueLead, "id" | "labels" | "meta" | "source"> &
     Partial<ResolvedConversation> & {
@@ -102,6 +110,11 @@ type QueueLead = Omit<DashboardQueueLead, "id" | "labels" | "meta" | "source"> &
     };
 
 type WorkflowModalStep = "closed" | "edit" | "confirm" | "saving";
+
+const toAccountId = (value: unknown) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+};
 
 const LeadActionQueue = () => {
     const {
@@ -258,6 +271,62 @@ const LeadActionQueue = () => {
         salesTotal,
         getChannelName,
     });
+    const canManageMetaCapi = canConfigureMetaCapi(role);
+
+    const buildMetaCapiEvent = useCallback((
+        lead: QueueLead,
+        eventKind: MetaCapiEventKind,
+        fieldPayload: Record<string, unknown>,
+    ): MetaCapiEventInput => {
+        const attrs = {
+            ...getAttrs(lead),
+            ...fieldPayload,
+        };
+        const channel = getChannelName(lead);
+        const resolvedName = cleanText(attrs.nombre_completo) || (getLeadName(lead) === "Sin Nombre" ? "" : getLeadName(lead));
+        const resolvedPhone = cleanText(attrs.celular) || getLeadPhone(lead, channel);
+        const resolvedEmail = cleanText(attrs.correo) || getLeadEmail(lead);
+        const meetingId = cleanText(attrs.meeting_id || attrs.id_cita || attrs.cita_id || lead.id);
+        const isSale = eventKind === "sale";
+        const appointmentDate = isSale
+            ? cleanText(attrs.fecha_monto_operacion) || getLeadOperationDate(lead) || getGuayaquilDateString()
+            : cleanText(attrs.fecha_visita);
+        const appointmentTime = isSale
+            ? getGuayaquilHourLabel()
+            : cleanText(attrs.hora_visita);
+
+        return {
+            accountId: toAccountId(lead.account_id),
+            eventKind,
+            conversationId: String(lead.id),
+            meetingId,
+            eventName: isSale ? "Purchase" : undefined,
+            name: resolvedName,
+            email: resolvedEmail,
+            phone: resolvedPhone,
+            channel,
+            appointmentDate,
+            appointmentTime,
+            value: isSale ? parseAmount(attrs.monto_operacion) : undefined,
+            currency: "USD",
+        };
+    }, [getChannelName]);
+
+    const sendMetaCapiAfterWorkflow = useCallback(async (event: MetaCapiEventInput) => {
+        try {
+            const result = await metaCapiClient.sendEvent(event);
+            if (result.status === "skipped") {
+                toast.info(`Cambio guardado. Meta CAPI omitido: ${result.message || "sin configuracion activa"}`);
+                return;
+            }
+            if (!result.ok || result.status === "error") {
+                toast.warning(`Cambio guardado, pero Meta CAPI fallo: ${result.error || "revisa la auditoria"}`);
+            }
+        } catch (metaError) {
+            console.error("Meta CAPI send failed after successful workflow update:", metaError);
+            toast.warning("Cambio guardado, pero Meta CAPI no recibio el evento");
+        }
+    }, []);
 
     const closeAppointmentWorkflow = (force = false) => {
         if (isSavingAppointment && !force) return;
@@ -342,6 +411,7 @@ const LeadActionQueue = () => {
                 successMessage: "Cita guardada correctamente"
             });
 
+            void sendMetaCapiAfterWorkflow(buildMetaCapiEvent(appointmentLead, "appointment", appointmentPayload));
             closeAppointmentWorkflow(true);
         } catch (appointmentError) {
             console.error("Error confirming human appointment:", appointmentError);
@@ -424,6 +494,7 @@ const LeadActionQueue = () => {
                 successMessage: "Venta guardada correctamente"
             });
 
+            void sendMetaCapiAfterWorkflow(buildMetaCapiEvent(operationLead, "sale", salePayload));
             closeOperationWorkflow(true);
         } catch (operationError) {
             console.error("Error confirming operation:", operationError);
@@ -537,6 +608,7 @@ const LeadActionQueue = () => {
                     updateHumanConfigList={updateHumanConfigList}
                     updateHumanConfigLabel={updateHumanConfigLabel}
                     saveHumanConfig={saveHumanConfig}
+                    metaCapiSection={<MetaCapiConfigSection canConfigure={canManageMetaCapi} />}
                 />
             )}
 

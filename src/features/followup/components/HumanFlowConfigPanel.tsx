@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ChevronDown, ChevronUp, Loader2, Settings2 } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -43,6 +44,7 @@ type HumanFlowConfigPanelProps = {
     updateHumanConfigList: (key: HumanFlowListKey, value: string) => void;
     updateHumanConfigLabel: (key: HumanFlowLabelKey, value: string) => void;
     saveHumanConfig: () => void | Promise<void>;
+    metaCapiSection?: ReactNode;
 };
 
 export const HumanFlowConfigPanel = ({
@@ -56,6 +58,7 @@ export const HumanFlowConfigPanel = ({
     updateHumanConfigList,
     updateHumanConfigLabel,
     saveHumanConfig,
+    metaCapiSection,
 }: HumanFlowConfigPanelProps) => (
     <Collapsible open={isOpen} onOpenChange={onOpenChange}>
         <Card className="border-primary/20 shadow-sm">
@@ -332,6 +335,8 @@ export const HumanFlowConfigPanel = ({
                             Guardar configuracion
                         </Button>
                     </div>
+
+                    {metaCapiSection}
                 </CardContent>
             </CollapsibleContent>
         </Card>
