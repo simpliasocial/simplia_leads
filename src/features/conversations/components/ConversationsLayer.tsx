@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { chatwootService } from '@/services/ChatwootService';
 import { supabaseHistoricalClient } from '@/infrastructure/supabase/SupabaseHistoricalClient';
 import { useDashboardContext } from '@/context/useDashboardContext';
 import type { MinifiedConversation } from '@/services/StorageService';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { DataTablePagination } from '@/components/DataTablePagination';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
@@ -39,8 +40,7 @@ import {
 } from '@/lib/leadDisplay';
 import { formatBusinessLabel } from '@/lib/displayCopy';
 import {
-    buildWindowedListState,
-    WINDOWED_LIST_MAX_RENDERED_ROWS,
+    buildPaginatedListState,
     WINDOWED_TABLE_MAX_HEIGHT_PX
 } from '@/lib/windowedList';
 import { toast } from 'sonner';
@@ -76,6 +76,7 @@ const ConversationsLayer = () => {
     const [viewingConv, setViewingConv] = useState<MinifiedConversation | null>(null);
     const [messages, setMessages] = useState<ConversationMessage[]>([]);
     const [loadingHistory, setLoadingHistory] = useState(false);
+    const [page, setPage] = useState(1);
 
     const selectedInboxKey = (globalFilters.selectedInboxes || []).join(',');
     const selectedInboxes = useMemo(
@@ -137,10 +138,14 @@ const ConversationsLayer = () => {
             .sort((a, b) => (b.timestamp || b.created_at || 0) - (a.timestamp || a.created_at || 0));
     }, [conversations, globalFilters.startDate, globalFilters.endDate, selectedInboxes, search, getChannelName, getInbox]);
 
-    const windowedConversations = useMemo(
-        () => buildWindowedListState(filteredConversations),
-        [filteredConversations]
+    const paginatedConversations = useMemo(
+        () => buildPaginatedListState(filteredConversations, page),
+        [filteredConversations, page]
     );
+
+    useEffect(() => {
+        setPage(1);
+    }, [search, selectedInboxKey, globalFilters.startDate, globalFilters.endDate]);
 
     const openInChatwoot = (conversationId: number) => {
         const url = getChatwootUrl(conversationId);
@@ -213,10 +218,8 @@ const ConversationsLayer = () => {
                                 Listado de Conversaciones
                             </CardTitle>
                             <CardDescription>
-                                Total encontrado: <span className="font-bold text-foreground">{windowedConversations.total}</span>
-                                {windowedConversations.isTrimmed && (
-                                    <span> · viendo las {WINDOWED_LIST_MAX_RENDERED_ROWS} más recientes</span>
-                                )}
+                                Total encontrado: <span className="font-bold text-foreground">{paginatedConversations.total}</span>
+                                <span> · más recientes primero</span>
                             </CardDescription>
                             {(liveError || historicalError || error) && (
                                 <div className="mt-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
@@ -253,8 +256,8 @@ const ConversationsLayer = () => {
                         <div className="space-y-4">
                             <div className="rounded-xl border border-border overflow-hidden bg-background shadow-sm">
                                 <div
-                                    className={windowedConversations.hasVerticalScroll ? 'overflow-auto overscroll-contain' : 'overflow-x-auto'}
-                                    style={windowedConversations.hasVerticalScroll ? { maxHeight: `${WINDOWED_TABLE_MAX_HEIGHT_PX}px` } : undefined}
+                                    className={paginatedConversations.hasVerticalScroll ? 'overflow-auto overscroll-contain' : 'overflow-x-auto'}
+                                    style={paginatedConversations.hasVerticalScroll ? { maxHeight: `${WINDOWED_TABLE_MAX_HEIGHT_PX}px` } : undefined}
                                 >
                                     <table className="w-full min-w-[1480px] text-sm text-left border-collapse">
                                         <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur supports-[backdrop-filter]:bg-muted/80">
@@ -271,7 +274,7 @@ const ConversationsLayer = () => {
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-border">
-                                            {windowedConversations.visibleItems.length === 0 ? (
+                                            {paginatedConversations.visibleItems.length === 0 ? (
                                                 <tr>
                                                     <td colSpan={8} className="px-6 py-24 text-center">
                                                         <div className="flex flex-col items-center gap-2 opacity-40">
@@ -281,7 +284,7 @@ const ConversationsLayer = () => {
                                                     </td>
                                                 </tr>
                                             ) : (
-                                                windowedConversations.visibleItems.map((lead) => {
+                                                paginatedConversations.visibleItems.map((lead) => {
                                                     const inbox = getInbox(lead);
                                                     const displayName = getLeadName(lead);
                                                     const channelDisplay = getLeadChannelName(lead, inbox);
@@ -373,6 +376,14 @@ const ConversationsLayer = () => {
                                         </tbody>
                                     </table>
                                 </div>
+                                <DataTablePagination
+                                    total={paginatedConversations.total}
+                                    page={paginatedConversations.page}
+                                    pageCount={paginatedConversations.pageCount}
+                                    start={paginatedConversations.start}
+                                    end={paginatedConversations.end}
+                                    onPageChange={setPage}
+                                />
                             </div>
                         </div>
                     )}

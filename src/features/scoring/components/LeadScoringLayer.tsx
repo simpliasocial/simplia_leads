@@ -91,8 +91,7 @@ const LeadScoringLayer: React.FC = () => {
             <ScoringLeadsTable
                 scoreFieldLabel={scoringData.scoreFieldLabel}
                 activeFilterSummary={scoringData.activeFilterSummary}
-                windowedDetailRows={scoringData.windowedDetailRows}
-                detailShowingLabel={scoringData.detailShowingLabel}
+                detailRows={scoringData.detailRows}
                 detailSearch={scoringData.detailSearch}
                 setDetailSearch={scoringData.setDetailSearch}
                 openHistory={scoringHistory.openHistory}

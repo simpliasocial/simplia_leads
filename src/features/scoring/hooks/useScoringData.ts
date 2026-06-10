@@ -5,7 +5,6 @@ import { getLeadChannelName, normalize, getLeadPhone, getRawLeadPhone, getLeadNa
 import { bucketFromScore, parseNumericScore, formatScoreValue, SCORE_BUCKET_COPY, SCORE_BUCKET_ORDER, type ScoreBucket } from "@/lib/leadScoreClassification";
 import { formatBusinessLabel, formatFieldLabel } from "@/lib/displayCopy";
 import { extractLeadLabels, parseDate, percent, resolveLeadCampaign, scoreAverage, unique, type ScoreDimension } from "@/features/scoring/model/leadScoringModel";
-import { buildWindowedListState, WINDOWED_LIST_VISIBLE_ROWS } from "@/lib/windowedList";
 import type { Inbox } from "@/domain/lead";
 
 export interface PreparedLead {
@@ -160,7 +159,13 @@ export const useScoringData = (config: {
         coldPercentage: percent(coldLeads.length, filteredLeads.length),
     };
 
-    const detailRows = [...filteredLeads].sort((a, b) => (b.score ?? Number.NEGATIVE_INFINITY) - (a.score ?? Number.NEGATIVE_INFINITY) || (b.lead.timestamp || 0) - (a.lead.timestamp || 0));
+    const detailRows = useMemo(
+        () => [...filteredLeads].sort((a, b) =>
+            Number(b.lead.timestamp || b.lead.created_at || 0) - Number(a.lead.timestamp || a.lead.created_at || 0) ||
+            (b.score ?? Number.NEGATIVE_INFINITY) - (a.score ?? Number.NEGATIVE_INFINITY)
+        ),
+        [filteredLeads],
+    );
 
     const searchedDetailRows = useMemo(() => {
         const query = normalize(detailSearch);
@@ -172,8 +177,6 @@ export const useScoringData = (config: {
             return haystack.includes(query);
         });
     }, [detailRows, detailSearch]);
-
-    const windowedDetailRows = useMemo(() => buildWindowedListState(searchedDetailRows), [searchedDetailRows]);
 
     const scoreFieldLabel = config.selectedScoreAttribute?.label || formatFieldLabel(config.activeScoreAttributeKey) || "ningún campo";
 
@@ -192,10 +195,6 @@ export const useScoringData = (config: {
         return filters.length > 0 ? filters.join(" | ") : "Sin filtros internos; usando fecha y canal global si están seleccionados.";
     }, [globalFilters.startDate, globalFilters.endDate, globalFilters.selectedInboxes, inboxMap, campaignFilter, labelFilters, ownerFilter, bucketFilter, detailSearch]);
 
-    const detailShowingLabel = windowedDetailRows.total > WINDOWED_LIST_VISIBLE_ROWS
-        ? `Mostrando hasta ${windowedDetailRows.visibleItems.length} de ${windowedDetailRows.total}`
-        : `Mostrando ${windowedDetailRows.visibleItems.length} de ${windowedDetailRows.total}`;
-
     return {
         // Filter state
         campaignFilter, setCampaignFilter, labelFilters, setLabelFilters,
@@ -204,7 +203,7 @@ export const useScoringData = (config: {
         // Data
         filterOptions, filteredLeads, scoredLeadCount: scoredFilteredLeads.length, filteredMissingScoreCount,
         kpis, bucketDistribution, averageByChannel, averageByDimension, scoreDomain, conversionByBucket,
-        windowedDetailRows, scoreFieldLabel, activeFilterSummary, detailShowingLabel,
+        detailRows: searchedDetailRows, scoreFieldLabel, activeFilterSummary,
         hotLeads, coldLeads, hotAppointments,
     };
 };

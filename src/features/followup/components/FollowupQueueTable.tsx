@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
     CheckCircle2,
@@ -13,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { DataTablePagination } from "@/components/DataTablePagination";
 import {
     formatDateTime,
     getChatwootUrl,
@@ -25,8 +27,7 @@ import {
     getAttrs,
 } from "@/lib/leadDisplay";
 import {
-    buildWindowedListState,
-    WINDOWED_LIST_MAX_RENDERED_ROWS,
+    buildPaginatedListState,
     WINDOWED_TABLE_MAX_HEIGHT_PX,
 } from "@/lib/windowedList";
 import { formatBusinessLabel } from "@/lib/displayCopy";
@@ -70,11 +71,14 @@ export const FollowupQueueTable = <TLead extends FollowupQueueTableLead>({
     searchValue,
     onSearchChange,
 }: FollowupQueueTableProps<TLead>) => {
-    const windowedLeads = buildWindowedListState(leads);
-    const filteredLabel = `${windowedLeads.total} lead${windowedLeads.total === 1 ? "" : "s"} filtrado${windowedLeads.total === 1 ? "" : "s"}`;
-    const summaryLabel = windowedLeads.isTrimmed
-        ? `${filteredLabel} \u00b7 viendo los ${WINDOWED_LIST_MAX_RENDERED_ROWS} m\u00e1s recientes`
-        : filteredLabel;
+    const [page, setPage] = useState(1);
+    const paginatedLeads = buildPaginatedListState(leads, page);
+    const filteredLabel = `${paginatedLeads.total} lead${paginatedLeads.total === 1 ? "" : "s"} filtrado${paginatedLeads.total === 1 ? "" : "s"}`;
+    const summaryLabel = `${filteredLabel} \u00b7 m\u00e1s recientes primero`;
+
+    useEffect(() => {
+        setPage(1);
+    }, [leads]);
 
     return (
         <Card className="border-primary/20 shadow-sm">
@@ -119,8 +123,8 @@ export const FollowupQueueTable = <TLead extends FollowupQueueTableLead>({
             <CardContent>
                 <div className="relative overflow-hidden rounded-xl border bg-background">
                     <div
-                        className={windowedLeads.hasVerticalScroll ? "overflow-auto overscroll-contain" : "overflow-x-auto"}
-                        style={windowedLeads.hasVerticalScroll ? { maxHeight: `${WINDOWED_TABLE_MAX_HEIGHT_PX}px` } : undefined}
+                        className={paginatedLeads.hasVerticalScroll ? "overflow-auto overscroll-contain" : "overflow-x-auto"}
+                        style={paginatedLeads.hasVerticalScroll ? { maxHeight: `${WINDOWED_TABLE_MAX_HEIGHT_PX}px` } : undefined}
                     >
                         <table className="w-full min-w-[1480px] text-left text-sm">
                             <thead className="sticky top-0 z-10 border-b bg-muted/95 text-[10px] font-bold uppercase tracking-wider text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-muted/80">
@@ -138,7 +142,7 @@ export const FollowupQueueTable = <TLead extends FollowupQueueTableLead>({
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-muted/20">
-                                {windowedLeads.visibleItems.map((lead) => {
+                                {paginatedLeads.visibleItems.map((lead) => {
                                     const displayName = getLeadName(lead);
                                     const channelDisplay = getChannelName(lead);
                                     const phoneDisplay = getLeadPhone({ ...lead, channel: channelDisplay }, channelDisplay);
@@ -244,7 +248,7 @@ export const FollowupQueueTable = <TLead extends FollowupQueueTableLead>({
                                         </tr>
                                     );
                                 })}
-                                {windowedLeads.visibleItems.length === 0 && (
+                                {paginatedLeads.visibleItems.length === 0 && (
                                     <tr>
                                         <td colSpan={9} className="px-6 py-20 text-center">
                                             <div className="flex flex-col items-center gap-2 opacity-40">
@@ -257,6 +261,14 @@ export const FollowupQueueTable = <TLead extends FollowupQueueTableLead>({
                             </tbody>
                         </table>
                     </div>
+                    <DataTablePagination
+                        total={paginatedLeads.total}
+                        page={paginatedLeads.page}
+                        pageCount={paginatedLeads.pageCount}
+                        start={paginatedLeads.start}
+                        end={paginatedLeads.end}
+                        onPageChange={setPage}
+                    />
                 </div>
             </CardContent>
         </Card>

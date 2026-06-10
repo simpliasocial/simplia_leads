@@ -1,20 +1,20 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DataTablePagination } from "@/components/DataTablePagination";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Clock, ExternalLink, Search, Target } from "lucide-react";
 import { formatDateTime, getLeadExternalUrl, getLeadName, getLeadPhone, getMessagePreview, getMessageTimestamp, getInitials } from "@/lib/leadDisplay";
 import { formatBusinessLabel } from "@/lib/displayCopy";
 import { formatScoreValue, SCORE_BUCKET_COPY } from "@/lib/leadScoreClassification";
-import { WINDOWED_TABLE_MAX_HEIGHT_PX } from "@/lib/windowedList";
+import { buildPaginatedListState, WINDOWED_TABLE_MAX_HEIGHT_PX } from "@/lib/windowedList";
 import { extractLeadLabels } from "../model/leadScoringModel";
 
 interface ScoringLeadsTableProps {
     scoreFieldLabel: string;
     activeFilterSummary: string;
-    windowedDetailRows: any;
-    detailShowingLabel: string;
+    detailRows: any[];
     detailSearch: string;
     setDetailSearch: (value: string) => void;
     openHistory: (lead: any) => void;
@@ -23,9 +23,16 @@ interface ScoringLeadsTableProps {
 const BUCKET_COPY = SCORE_BUCKET_COPY;
 
 export const ScoringLeadsTable: React.FC<ScoringLeadsTableProps> = ({
-    scoreFieldLabel, activeFilterSummary, windowedDetailRows,
-    detailShowingLabel, detailSearch, setDetailSearch, openHistory
+    scoreFieldLabel, activeFilterSummary, detailRows,
+    detailSearch, setDetailSearch, openHistory
 }) => {
+    const [page, setPage] = useState(1);
+    const paginatedDetailRows = buildPaginatedListState(detailRows, page);
+
+    useEffect(() => {
+        setPage(1);
+    }, [detailRows]);
+
     return (
         <Card>
             <CardHeader className="border-b pb-4">
@@ -40,7 +47,7 @@ export const ScoringLeadsTable: React.FC<ScoringLeadsTableProps> = ({
                                 El puntaje sale de <span className="font-semibold text-foreground">{scoreFieldLabel}</span>. {activeFilterSummary}
                             </span>
                             <span className="block">
-                                Total encontrados: <span className="font-semibold text-foreground">{windowedDetailRows.total}</span> · {detailShowingLabel}
+                                Total encontrados: <span className="font-semibold text-foreground">{paginatedDetailRows.total}</span> · más recientes primero
                             </span>
                         </CardDescription>
                     </div>
@@ -58,8 +65,8 @@ export const ScoringLeadsTable: React.FC<ScoringLeadsTableProps> = ({
             <CardContent className="pt-6">
                 <div className="rounded-xl border bg-background shadow-sm">
                     <div
-                        className={windowedDetailRows.hasVerticalScroll ? "overflow-auto overscroll-contain" : "overflow-x-auto"}
-                        style={windowedDetailRows.hasVerticalScroll ? { maxHeight: `${WINDOWED_TABLE_MAX_HEIGHT_PX}px` } : undefined}
+                        className={paginatedDetailRows.hasVerticalScroll ? "overflow-auto overscroll-contain" : "overflow-x-auto"}
+                        style={paginatedDetailRows.hasVerticalScroll ? { maxHeight: `${WINDOWED_TABLE_MAX_HEIGHT_PX}px` } : undefined}
                     >
                         <table className="w-full min-w-[1480px] text-left text-sm">
                             <thead className="sticky top-0 z-10 border-b bg-muted/95 text-[10px] uppercase tracking-wider text-muted-foreground backdrop-blur">
@@ -78,14 +85,14 @@ export const ScoringLeadsTable: React.FC<ScoringLeadsTableProps> = ({
                                 </tr>
                             </thead>
                             <tbody className="divide-y">
-                                {windowedDetailRows.visibleItems.length === 0 ? (
+                                {paginatedDetailRows.visibleItems.length === 0 ? (
                                     <tr>
                                         <td className="px-4 py-12 text-center text-muted-foreground" colSpan={11}>
                                             No hay leads para mostrar con estos filtros.
                                         </td>
                                     </tr>
                                 ) : (
-                                    windowedDetailRows.visibleItems.map(item => {
+                                    paginatedDetailRows.visibleItems.map(item => {
                                         const labels = extractLeadLabels(item.lead);
                                         const phone = getLeadPhone(item.lead, item.channel);
                                         const lastMessageDate = formatDateTime(getMessageTimestamp(item.lead));
@@ -168,6 +175,14 @@ export const ScoringLeadsTable: React.FC<ScoringLeadsTableProps> = ({
                             </tbody>
                         </table>
                     </div>
+                    <DataTablePagination
+                        total={paginatedDetailRows.total}
+                        page={paginatedDetailRows.page}
+                        pageCount={paginatedDetailRows.pageCount}
+                        start={paginatedDetailRows.start}
+                        end={paginatedDetailRows.end}
+                        onPageChange={setPage}
+                    />
                 </div>
             </CardContent>
         </Card>
