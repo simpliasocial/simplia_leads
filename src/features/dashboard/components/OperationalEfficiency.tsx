@@ -50,6 +50,15 @@ const sourceLabel = (events: IncomingMessageTrafficEvent[]) => {
     return "Sin mensajes";
 };
 
+const getTrafficLevel = (value: number, maxValue: number) => {
+    if (value <= 0 || maxValue <= 0) return "Sin actividad";
+
+    const intensity = value / maxValue;
+    if (intensity > 0.7) return "Tráfico alto";
+    if (intensity > 0.3) return "Tráfico medio";
+    return "Tráfico bajo";
+};
+
 const OperationalEfficiency = () => {
     const {
         globalFilters,
@@ -185,8 +194,6 @@ const OperationalEfficiency = () => {
         });
         return max || 1;
     }, [heatmapData]);
-
-
 
     const selectedChannelLabel = useMemo(() => {
         if (selectedInboxIds.length === 0) return "Todos los canales";
@@ -336,7 +343,7 @@ const OperationalEfficiency = () => {
                             <div>
                                 <CardTitle className="flex items-center gap-2 text-base">
                                     <MessageCircle className="h-5 w-5 text-primary" />
-                                    Horas pico de trafico
+                                    Horas pico de tráfico
                                 </CardTitle>
                                 <CardDescription className="mt-1 max-w-3xl">
                                     Intensidad de mensajes entrantes por día de la semana y hora (Hora local Guayaquil).
@@ -369,6 +376,37 @@ const OperationalEfficiency = () => {
                                         {trafficError}
                                     </div>
                                 )}
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                        <div className="space-y-3">
+                                            <p className="text-sm text-slate-600">
+                                                <span className="font-semibold text-slate-900">¿Cómo se clasifica?</span>{" "}
+                                                Cada celda cuenta los mensajes entrantes de ese día y hora, y se compara con la celda de mayor volumen dentro del rango y canal seleccionados.
+                                            </p>
+                                            <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
+                                                <span className="inline-flex items-center gap-1.5">
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                                                    Bajo: más de 0% hasta 30%
+                                                </span>
+                                                <span className="inline-flex items-center gap-1.5">
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                                    Medio: más de 30% hasta 70%
+                                                </span>
+                                                <span className="inline-flex items-center gap-1.5">
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-orange-500" />
+                                                    Alto: más de 70% hasta 100%
+                                                </span>
+                                                <span className="inline-flex items-center gap-1.5">
+                                                    <span className="h-1.5 w-1.5 rounded-full bg-slate-300" />
+                                                    Sin actividad: 0 mensajes
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <Badge variant="outline" className="h-fit whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold text-slate-700">
+                                            Referencia: 100% = {maxHeatmapValue} {maxHeatmapValue === 1 ? "mensaje" : "mensajes"}
+                                        </Badge>
+                                    </div>
+                                </div>
                                 <div className="overflow-x-auto">
                                     <div className="min-w-[900px] pb-2 pt-2">
                                         <div className="flex">
@@ -389,6 +427,7 @@ const OperationalEfficiency = () => {
                                                             {Array.from({ length: 24 }).map((_, hour) => {
                                                                 const val = heatmapData[dayIdx][hour];
                                                                 const intensity = val > 0 ? (val / maxHeatmapValue) : 0;
+                                                                const trafficLevel = getTrafficLevel(val, maxHeatmapValue);
                                                                 return (
                                                                     <ShadcnTooltip key={`cell-${dayIdx}-${hour}`}>
                                                                         <TooltipTrigger asChild>
@@ -406,7 +445,10 @@ const OperationalEfficiency = () => {
                                                                                 {['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIdx]}
                                                                             </p>
                                                                             <p className="text-sm font-semibold">
-                                                                                {hour.toString().padStart(2, '0')}:00 — {intensity > 0.7 ? 'Alto tráfico' : intensity > 0.3 ? 'Tráfico medio' : val > 0 ? 'Tráfico bajo' : 'Sin actividad'}
+                                                                                {hour.toString().padStart(2, '0')}:00 — {trafficLevel}
+                                                                            </p>
+                                                                            <p className="text-xs text-muted-foreground">
+                                                                                {val} {val === 1 ? "mensaje" : "mensajes"} en esta franja.
                                                                             </p>
                                                                         </TooltipContent>
                                                                     </ShadcnTooltip>
