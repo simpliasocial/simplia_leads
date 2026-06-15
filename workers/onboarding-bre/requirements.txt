@@ -1,0 +1,12 @@
+beautifulsoup4>=4.12,<5
+extruct>=0.18,<1
+httpx>=0.27,<1
+instaloader>=4.13,<5
+openai>=1.68,<2
+playwright>=1.50,<2
+pydantic>=2.10,<3
+scrapy>=2.12,<3
+scrapy-playwright>=0.0.42,<1
+tldextract>=5.1,<6
+trafilatura>=2.0,<3
+yt-dlp>=2025.1.15

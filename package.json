@@ -13,7 +13,7 @@
     "test:domain": "node tests/domain/leadRules.test.mjs && node tests/domain/conversationRules.test.mjs && node tests/domain/permissions.test.mjs",
     "test:application": "node tests/application/dashboardViewModel.test.mjs",
     "test:infrastructure": "node tests/infrastructure/conversationMapper.test.mjs",
-    "test:features": "node tests/features/followupModel.test.mjs && node tests/features/scoringModel.test.mjs && node tests/features/windowedList.test.mjs && node tests/features/reportExportModel.test.mjs && node tests/features/reportCatalog.test.mjs && node tests/features/aiReportPrompt.test.mjs && node tests/features/metaAdsInsightsModel.test.mjs",
+    "test:features": "node tests/features/followupModel.test.mjs && node tests/features/scoringModel.test.mjs && node tests/features/windowedList.test.mjs && node tests/features/reportExportModel.test.mjs && node tests/features/reportCatalog.test.mjs && node tests/features/aiReportPrompt.test.mjs && node tests/features/metaAdsInsightsModel.test.mjs && node tests/features/onboardingBreModel.test.mjs",
     "test:unit": "npm run test:domain && npm run test:application && npm run test:features && npm run test:infrastructure",
     "check": "npm run typecheck && npm run test:unit && npm run build"
   },
