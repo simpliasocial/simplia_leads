@@ -11,7 +11,7 @@ import httpx
 
 from .normalizer import normalize_context
 from .security import UnsafeUrlError, normalize_public_url
-from .social import PlatformBlockedError, scrape_social
+from .social import PartialExtractionError, PlatformBlockedError, fetch_public_html, scrape_social
 
 
 @dataclass
@@ -46,7 +46,11 @@ class BreApi:
 
     def call(self, action: str, **payload):
         response = self.client.post(self.endpoint, json={"action": action, **payload})
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = response.text.strip()[:1000] or "sin detalle"
+            raise RuntimeError(f"{action} failed with HTTP {response.status_code}: {detail}") from exc
         data = response.json()
         if data.get("error"):
             raise RuntimeError(data["error"])
@@ -75,7 +79,7 @@ def crawl_website(source: dict, limits: dict) -> tuple[list[dict], list[dict]]:
     result = json.loads(lines[-1])
     documents = result.get("documents") or []
     if not documents:
-        raise RuntimeError("Website did not expose crawlable public content")
+        documents = [fetch_public_html(payload["url"], use_browser_fallback=True)]
     return documents, result.get("discoveredSources") or []
 
 
@@ -130,12 +134,27 @@ def process_job(api: BreApi, queue_job: dict) -> None:
             documents.extend(source_documents)
             pages = len(source_documents)
             total_pages += pages
-            completed += 1
             result = {
                 "sourceId": source_id,
                 "sourceType": source_type,
                 "status": "completed",
                 "pagesProcessed": pages,
+            }
+        except PartialExtractionError as exc:
+            partial_documents = exc.documents
+            for document in partial_documents:
+                document["sourceId"] = source_id
+                document["sourceType"] = source_type
+            documents.extend(partial_documents)
+            pages = len(partial_documents)
+            total_pages += pages
+            result = {
+                "sourceId": source_id,
+                "sourceType": source_type,
+                "status": "partial",
+                "pagesProcessed": pages,
+                "errorCode": "partial_extraction",
+                "errorMessage": str(exc),
             }
         except PlatformBlockedError as exc:
             result = {
@@ -164,6 +183,7 @@ def process_job(api: BreApi, queue_job: dict) -> None:
                 "errorCode": "extraction_failed",
                 "errorMessage": str(exc)[:1000],
             }
+        completed += 1
         source_results.append(result)
         api.call(
             "update_worker_progress",

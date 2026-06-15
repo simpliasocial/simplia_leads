@@ -10,6 +10,7 @@ import scrapy
 import tldextract
 import trafilatura
 from bs4 import BeautifulSoup
+from scrapy_playwright.page import PageMethod
 
 from .security import UnsafeUrlError, normalize_public_url, validate_redirect
 
@@ -47,7 +48,9 @@ PRIORITY_WORDS = {
 async def secure_playwright_page(page, request):
     async def guard(route):
         try:
-            normalize_public_url(route.request.url)
+            scheme = urlsplit(route.request.url).scheme.lower()
+            if scheme in {"http", "https"}:
+                normalize_public_url(route.request.url)
             await route.continue_()
         except (UnsafeUrlError, ValueError):
             await route.abort()
@@ -140,15 +143,21 @@ class BreWebsiteSpider(scrapy.Spider):
                     "playwright": True,
                     "playwright_rendered": True,
                     "playwright_page_init_callback": secure_playwright_page,
+                    "playwright_page_methods": [PageMethod("wait_for_timeout", 2_500)],
                     "depth": response.meta.get("depth", 0),
                 },
                 priority=110,
             )
             return
 
+        soup = BeautifulSoup(raw_html, "html.parser")
+        if len(extracted.strip()) < 180:
+            extracted = soup.get_text("\n", strip=True)
+        if len(extracted.strip()) < 80:
+            return
+
         self.pages_seen += 1
 
-        soup = BeautifulSoup(raw_html, "html.parser")
         title = (soup.title.string or "").strip() if soup.title and soup.title.string else ""
         metadata = self._metadata(soup)
         links = []

@@ -22,6 +22,12 @@ class PlatformBlockedError(RuntimeError):
     pass
 
 
+class PartialExtractionError(RuntimeError):
+    def __init__(self, message: str, documents: list[dict]):
+        super().__init__(message)
+        self.documents = documents
+
+
 def _document(url: str, text: str, raw: str, metadata: dict | None = None, title: str = "") -> dict:
     return {
         "kind": "document",
@@ -36,7 +42,18 @@ def _document(url: str, text: str, raw: str, metadata: dict | None = None, title
     }
 
 
-def _fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
+def _extract_readable_text(raw: str, url: str, fallback_text: str = "") -> str:
+    extracted = trafilatura.extract(raw, url=url, favor_recall=True) or ""
+    if len(extracted.strip()) >= 80:
+        return extracted
+    visible_text = fallback_text.strip()
+    if not visible_text:
+        soup = BeautifulSoup(raw, "html.parser")
+        visible_text = soup.get_text("\n", strip=True)
+    return visible_text
+
+
+def fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
     current = normalize_public_url(url)
     headers = {"User-Agent": "Mozilla/5.0 (compatible; SimpliaBRE/1.0; +public-onboarding)"}
     with httpx.Client(timeout=20, headers=headers, follow_redirects=False) as client:
@@ -52,7 +69,7 @@ def _fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
                 raise PlatformBlockedError(f"Platform returned HTTP {response.status_code}")
             response.raise_for_status()
             raw = response.text
-            text = trafilatura.extract(raw, url=current, favor_recall=True) or ""
+            text = _extract_readable_text(raw, current)
             if len(text.strip()) >= 120 or not use_browser_fallback:
                 soup = BeautifulSoup(raw, "html.parser")
                 title = soup.title.string.strip() if soup.title and soup.title.string else ""
@@ -63,22 +80,33 @@ def _fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(user_agent=headers["User-Agent"])
+
         def guard_route(route):
             try:
-                normalize_public_url(route.request.url)
+                scheme = urlsplit(route.request.url).scheme.lower()
+                if scheme in {"http", "https"}:
+                    normalize_public_url(route.request.url)
                 route.continue_()
             except (UnsafeUrlError, ValueError):
                 route.abort()
+
         page.route("**/*", guard_route)
-        response = page.goto(current, wait_until="domcontentloaded", timeout=20_000)
-        if response and response.status in {401, 403, 429}:
+        try:
+            response = page.goto(current, wait_until="domcontentloaded", timeout=30_000)
+            if response and response.status in {401, 403, 429}:
+                raise PlatformBlockedError(f"Platform returned HTTP {response.status}")
+            page.wait_for_timeout(2_500)
+            final_url = normalize_public_url(page.url)
+            raw = page.content()
+            title = page.title()
+            try:
+                visible_text = page.locator("body").inner_text(timeout=5_000)
+            except Exception:
+                visible_text = ""
+        finally:
+            page.unroute("**/*", guard_route)
             browser.close()
-            raise PlatformBlockedError(f"Platform returned HTTP {response.status}")
-        final_url = normalize_public_url(page.url)
-        raw = page.content()
-        title = page.title()
-        browser.close()
-    text = trafilatura.extract(raw, url=final_url, favor_recall=True) or ""
+    text = _extract_readable_text(raw, final_url, visible_text)
     if len(text.strip()) < 80:
         raise PlatformBlockedError("Platform requires authentication or blocked public extraction")
     return _document(final_url, text, raw, title=title)
@@ -87,7 +115,7 @@ def _fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
 def scrape_instagram(url: str) -> list[dict]:
     username_match = re.search(r"instagram\.com/([^/?#]+)", url)
     if not username_match:
-        return [_fetch_public_html(url)]
+        return [fetch_public_html(url)]
     username = username_match.group(1)
     loader = instaloader.Instaloader(download_pictures=False, download_videos=False, save_metadata=False, quiet=True)
     try:
@@ -110,7 +138,7 @@ def scrape_instagram(url: str) -> list[dict]:
         raw = json.dumps(payload, ensure_ascii=False)
         return [_document(url, "\n\n".join(filter(None, [profile.full_name, profile.biography, *captions])), raw, payload, profile.full_name)]
     except Exception:
-        return [_fetch_public_html(url)]
+        return [fetch_public_html(url)]
 
 
 def _yt_dlp_metadata(url: str) -> dict:
@@ -159,8 +187,24 @@ def scrape_tiktok(url: str) -> list[dict]:
         metadata = _yt_dlp_metadata(url)
         raw = json.dumps(metadata, ensure_ascii=False)
         return [_document(url, raw, raw, metadata, str(metadata.get("title") or "TikTok"))]
-    except Exception:
-        return [_fetch_public_html(url)]
+    except Exception as exc:
+        if "does not have any videos posted" in str(exc).lower():
+            username_match = re.search(r"tiktok\.com/@([^/?#]+)", url)
+            username = username_match.group(1) if username_match else ""
+            payload = {
+                "username": username,
+                "profileUrl": url,
+                "recentVideos": [],
+                "extractionStatus": "no_public_videos",
+            }
+            raw = json.dumps(payload, ensure_ascii=False)
+            text = f"TikTok profile: @{username}\nNo public videos were exposed by the platform."
+            document = _document(url, text, raw, payload, f"@{username} | TikTok")
+            raise PartialExtractionError(
+                "El perfil es publico, pero TikTok no expuso videos o contenido adicional para extraer.",
+                [document],
+            ) from exc
+        return [fetch_public_html(url)]
 
 
 def scrape_social(source_type: str, url: str) -> list[dict]:
@@ -170,4 +214,4 @@ def scrape_social(source_type: str, url: str) -> list[dict]:
         return scrape_youtube(url)
     if source_type == "tiktok":
         return scrape_tiktok(url)
-    return [_fetch_public_html(url, use_browser_fallback=source_type in {"facebook", "linkedin", "other"})]
+    return [fetch_public_html(url, use_browser_fallback=source_type in {"facebook", "linkedin", "other"})]
