@@ -67,6 +67,8 @@ def fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
                 continue
             if response.status_code in {401, 403, 429}:
                 raise PlatformBlockedError(f"Platform returned HTTP {response.status_code}")
+            if response.status_code == 999:
+                raise PlatformBlockedError("LinkedIn blocked automated public extraction (HTTP 999)")
             response.raise_for_status()
             raw = response.text
             text = _extract_readable_text(raw, current)
@@ -93,7 +95,7 @@ def fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
         page.route("**/*", guard_route)
         try:
             response = page.goto(current, wait_until="domcontentloaded", timeout=30_000)
-            if response and response.status in {401, 403, 429}:
+            if response and response.status in {401, 403, 429, 999}:
                 raise PlatformBlockedError(f"Platform returned HTTP {response.status}")
             page.wait_for_timeout(2_500)
             final_url = normalize_public_url(page.url)

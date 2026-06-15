@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any, Literal
+from typing import Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -32,12 +32,12 @@ ALL_DYNAMIC_FIELDS = REQUIRED_DYNAMIC_FIELDS | {"general_restrictions", "faqs"}
 class NormalizedField(BaseModel):
     key: str
     category: str
-    value: Any = None
+    value: str | float | bool | list[str] | None = None
     origin: Literal["extracted", "inferred"]
     confidence: Literal["high", "medium", "low"] | None = None
     status: Literal["extracted", "inferred", "not_found", "pending_validation"]
     contradiction: bool = False
-    alternatives: list[Any] = Field(default_factory=list)
+    alternatives: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     required_for_base: bool = False
 
@@ -119,6 +119,7 @@ def normalize_context(documents: list[dict]) -> tuple[list[dict], str | None, st
 You normalize public business information for a base-context onboarding.
 Return structured fields covering identity, classification, offer, inferred ICP, communication,
 candidate FAQs, possible locations, visible hours, contacts, marketing, and legal context.
+Represent complex or repeated information as a concise list of strings; do not return nested objects.
 Every factual extracted value must cite one or more provided DOC ids. Never invent evidence.
 Use origin=inferred for hypotheses, including ICP and any classification not literally stated.
 Every inferred field must use status=inferred even at high confidence.
@@ -133,15 +134,18 @@ Locations and visible hours are context only, never confirmed branches, schedule
 Do not produce objectives, appointments, meetings, calendars, gates, filters, legal consent decisions,
 emoji preferences, templates, or pipeline matching configuration.
 """.strip()
-    client = OpenAI()
-    response = client.responses.parse(
-        model=model,
-        input=[
-            {"role": "system", "content": instructions},
-            {"role": "user", "content": prompt_documents},
-        ],
-        text_format=NormalizedContext,
-    )
+    try:
+        client = OpenAI()
+        response = client.responses.parse(
+            model=model,
+            input=[
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": prompt_documents},
+            ],
+            text_format=NormalizedContext,
+        )
+    except Exception as exc:
+        return _fallback(documents), f"OpenAI normalization failed; deterministic fallback used: {str(exc)[:1200]}", input_hash
     parsed = response.output_parsed
     if not parsed:
         return _fallback(documents), "OpenAI returned no structured output; deterministic fallback used", input_hash

@@ -366,11 +366,13 @@ const ProcessingStep = ({ project, onBack }: { project: OnboardingBreProjectV1; 
     const run = project.latestRun;
     const progress = run?.sourcesTotal ? Math.round((run.sourcesCompleted / run.sourcesTotal) * 100) : 5;
     const website = project.sources.find((source) => source.type === "website");
+    const websiteComplete = website?.status === "completed";
+    const processing = project.status === "scraping";
     return (
         <div className="mx-auto max-w-4xl space-y-6">
             <div className="text-center">
-                {project.status === "scraping" ? <Loader2 className="mx-auto mb-4 h-10 w-10 animate-spin text-primary" /> : <AlertCircle className="mx-auto mb-4 h-10 w-10 text-destructive" />}
-                <h2 className="text-2xl font-bold">{project.status === "scraping" ? "Construyendo el contexto del negocio" : "El sitio web necesita atención"}</h2>
+                {processing ? <Loader2 className="mx-auto mb-4 h-10 w-10 animate-spin text-primary" /> : websiteComplete ? <CheckCircle2 className="mx-auto mb-4 h-10 w-10 text-emerald-600" /> : <AlertCircle className="mx-auto mb-4 h-10 w-10 text-destructive" />}
+                <h2 className="text-2xl font-bold">{processing ? "Construyendo el contexto del negocio" : websiteComplete ? "Fuentes públicas procesadas" : "El sitio web necesita atención"}</h2>
                 <p className="mt-2 text-muted-foreground">Rastreo, extracción, deduplicación, evidencias y normalización IA se ejecutan fuera del navegador.</p>
             </div>
             <Card><CardContent className="space-y-3 pt-6"><div className="flex justify-between text-sm"><span>{run?.pagesProcessed || 0} páginas procesadas</span><span>{progress}%</span></div><Progress value={progress} /></CardContent></Card>

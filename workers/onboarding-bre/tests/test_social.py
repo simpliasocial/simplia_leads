@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.social import PartialExtractionError, _extract_readable_text, scrape_tiktok
+from app.social import PlatformBlockedError, fetch_public_html
 
 
 class SocialExtractionTests(unittest.TestCase):
@@ -21,6 +22,14 @@ class SocialExtractionTests(unittest.TestCase):
         document = raised.exception.documents[0]
         self.assertEqual(document["metadata"]["username"], "simplia.social")
         self.assertEqual(document["metadata"]["extractionStatus"], "no_public_videos")
+
+    @patch("app.social.httpx.Client")
+    def test_linkedin_private_status_is_platform_blocked(self, client):
+        response = client.return_value.__enter__.return_value.get.return_value
+        response.status_code = 999
+
+        with self.assertRaises(PlatformBlockedError):
+            fetch_public_html("https://www.linkedin.com/in/example")
 
 
 if __name__ == "__main__":
