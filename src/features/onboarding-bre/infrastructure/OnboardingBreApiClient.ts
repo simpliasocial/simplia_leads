@@ -9,6 +9,7 @@ import type {
     SaveContextAnswerV1,
 } from "../domain/types";
 import { buildDynamicQuestions } from "../model/onboardingBreModel";
+import { invokeAuthenticatedFunction } from "@/infrastructure/supabase/EdgeFunctionClient";
 
 type ApiResponse<T> = T & { error?: string; success?: boolean };
 
@@ -16,17 +17,7 @@ export class OnboardingBreApiClient {
     constructor(private readonly client: SupabaseClient = supabase) {}
 
     private async invoke<T>(body: Record<string, unknown>): Promise<T> {
-        const { data, error } = await this.client.functions.invoke<ApiResponse<T>>("onboarding-bre-api", { body });
-        if (error) {
-            let message = error.message;
-            try {
-                const details = await (error as { context?: Response }).context?.json();
-                message = details?.error || message;
-            } catch {
-                // The transport message remains the best available error.
-            }
-            throw new Error(message);
-        }
+        const data = await invokeAuthenticatedFunction<ApiResponse<T>>("onboarding-bre-api", body, this.client);
         if (data?.error) throw new Error(data.error);
         return data as T;
     }

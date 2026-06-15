@@ -4,7 +4,7 @@ import { chatwootService } from "@/services/ChatwootService";
 import type { MinifiedConversation } from "@/services/StorageService";
 import { hybridConversationRepository } from "@/infrastructure/conversation/HybridConversationRepository";
 import { labelEventClient } from "@/infrastructure/supabase/LabelEventClient";
-import { supabase } from "@/lib/supabase";
+import { invokeAuthenticatedFunction } from "@/infrastructure/supabase/EdgeFunctionClient";
 import type { UnknownRecord } from "@/domain/common/types";
 import {
     buildLeadWorkflowAttributeState,
@@ -28,15 +28,11 @@ export type UseLeadWorkflowUpdateParams = {
 
 const reconcileConversationSnapshot = async (conversationId: number, remainingRetries = 1): Promise<void> => {
     try {
-        const { error } = await supabase.functions.invoke("chatwoot-repair-conversations", {
-            body: {
-                ids: [conversationId],
-                limit: 1,
-                batch_size: 1,
-            },
+        await invokeAuthenticatedFunction("chatwoot-repair-conversations", {
+            ids: [conversationId],
+            limit: 1,
+            batch_size: 1,
         });
-
-        if (error) throw error;
     } catch (reconcileError) {
         console.error(`Server-side conversation reconcile failed for ${conversationId}:`, reconcileError);
         if (remainingRetries > 0) {

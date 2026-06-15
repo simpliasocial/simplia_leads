@@ -9,6 +9,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
+        let active = true;
+        let initialized = false;
+
         const fetchRole = async (userId: string) => {
             try {
                 const { data, error } = await supabase
@@ -19,44 +22,78 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 
                 if (error) {
                     console.error('Error fetching role for user:', userId, error);
-                    setRole('operator'); // Fallback to safe default
+                    if (active) setRole('operator');
                     return;
                 }
 
                 if (data?.role) {
-                    setRole(data.role as UserRole);
+                    if (active) setRole(data.role as UserRole);
                 } else {
                     console.warn('No role found for user:', userId);
-                    setRole('operator');
+                    if (active) setRole('operator');
                 }
             } catch (err) {
                 console.error('Unexpected error in fetchRole:', err);
-                setRole('operator');
+                if (active) setRole('operator');
             }
         };
 
-        // Check active sessions and sets the user
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            setUser(session?.user ?? null);
-            if (session?.user) {
-                fetchRole(session.user.id).finally(() => setLoading(false));
-            } else {
-                setLoading(false);
-            }
-        });
+        const clearSession = async () => {
+            await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+            if (!active) return;
+            setUser(null);
+            setRole(null);
+        };
 
-        // Listen for changes on auth state (sign in, sign out, etc.)
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-            setUser(session?.user ?? null);
-            if (session?.user) {
-                fetchRole(session.user.id).finally(() => setLoading(false));
-            } else {
+        const bootstrapSession = async () => {
+            try {
+                const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+                if (sessionError) throw sessionError;
+
+                let session = sessionData.session;
+                if (session?.access_token) {
+                    const { data: userData, error: userError } = await supabase.auth.getUser(session.access_token);
+                    if (userError || !userData.user) {
+                        const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+                        if (refreshError || !refreshed.session) {
+                            await clearSession();
+                            return;
+                        }
+                        session = refreshed.session;
+                    }
+                }
+
+                if (!active) return;
+                setUser(session?.user ?? null);
                 setRole(null);
-                setLoading(false);
+                if (session?.user) await fetchRole(session.user.id);
+            } catch (error) {
+                console.error('Error validating stored session:', error);
+                await clearSession();
+            } finally {
+                initialized = true;
+                if (active) setLoading(false);
             }
+        };
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+            if (!initialized || event === 'INITIAL_SESSION') return;
+
+            window.setTimeout(() => {
+                if (!active) return;
+                setUser(session?.user ?? null);
+                setRole(null);
+                if (session?.user) void fetchRole(session.user.id);
+                setLoading(false);
+            }, 0);
         });
 
-        return () => subscription.unsubscribe();
+        void bootstrapSession();
+
+        return () => {
+            active = false;
+            subscription.unsubscribe();
+        };
     }, []);
 
     const signIn = async (username: string, pass: string) => {

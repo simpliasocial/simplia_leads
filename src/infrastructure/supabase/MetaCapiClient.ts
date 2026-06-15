@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { invokeAuthenticatedFunction } from "./EdgeFunctionClient";
 
 export type MetaCapiConfig = {
     accountId: number;
@@ -66,17 +66,8 @@ export type MetaCapiActionResponse = {
     error?: string;
 };
 
-const errorMessage = (error: unknown) => {
-    if (error instanceof Error) return error.message;
-    if (typeof error === "string") return error;
-    const record = error && typeof error === "object" ? error as { message?: unknown } : {};
-    return String(record.message || "No se pudo invocar Meta CAPI.");
-};
-
 const invokeMetaCapi = async (body: Record<string, unknown>): Promise<MetaCapiActionResponse> => {
-    const { data, error } = await supabase.functions.invoke("meta-capi", { body });
-    if (error) throw new Error(errorMessage(error));
-    return data as MetaCapiActionResponse;
+    return invokeAuthenticatedFunction<MetaCapiActionResponse>("meta-capi", body);
 };
 
 export const metaCapiClient = {

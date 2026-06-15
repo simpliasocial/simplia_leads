@@ -1,5 +1,6 @@
 import { config } from "@/config";
 import { supabase } from "@/lib/supabase";
+import { getValidAccessToken } from "@/infrastructure/supabase/EdgeFunctionClient";
 import type { CriticalProfileKey, ReportFileFormat } from "@/domain/report";
 
 export type AiReportDownloadResponse = {
@@ -52,17 +53,22 @@ export const readableAiReportError = (body: AiReportDownloadResponse | null, fal
 };
 
 export const invokeAiReportFunction = async (payload: AiReportFunctionPayload): Promise<AiReportDownloadResponse> => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token || config.supabase.anonKey;
-    const response = await fetch(`${config.supabase.url}/functions/v1/generate-ai-report`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            apikey: config.supabase.anonKey,
-            Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-    });
+    const request = async (forceRefresh: boolean) => {
+        const token = await getValidAccessToken(supabase, forceRefresh);
+        return fetch(`${config.supabase.url}/functions/v1/generate-ai-report`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                apikey: config.supabase.anonKey,
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(payload),
+        });
+    };
+
+    let response = await request(false);
+    if (response.status === 401) response = await request(true);
+
     const text = await response.text();
     let body: AiReportDownloadResponse | null = null;
     try {
