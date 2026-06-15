@@ -467,15 +467,23 @@ serve(async (req) => {
             }
 
             const websiteResult = sourceResults.find((item: any) => item.sourceType === "website");
-            const websiteSucceeded = websiteResult?.status === "completed";
+            const { data: storedWebsite } = await bre.from("sources")
+                .select("status")
+                .eq("project_id", projectId)
+                .eq("source_type", "website")
+                .maybeSingle();
+            const websiteSucceeded = websiteResult
+                ? websiteResult.status === "completed"
+                : storedWebsite?.status === "completed";
             const completedCount = sourceResults.filter((item: any) => item.status === "completed").length;
-            const runStatus = websiteSucceeded
-                ? completedCount === sourceResults.length ? "completed" : "partial"
-                : "failed";
+            const runIncludesWebsite = Boolean(websiteResult);
+            const runStatus = runIncludesWebsite && !websiteSucceeded
+                ? "failed"
+                : completedCount === sourceResults.length ? "completed" : "partial";
             await bre.from("scrape_runs").update({
                 status: runStatus,
                 pages_processed: sourceResults.reduce((sum: number, item: any) => sum + Number(item.pagesProcessed || 0), 0),
-                sources_completed: completedCount,
+                sources_completed: sourceResults.length,
                 error_summary: sourceResults.filter((item: any) => item.errorCode).map((item: any) => ({
                     sourceId: item.sourceId,
                     code: item.errorCode,

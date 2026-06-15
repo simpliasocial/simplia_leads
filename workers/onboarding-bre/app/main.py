@@ -39,6 +39,7 @@ class BreApi:
             timeout=60,
             headers={
                 "apikey": config.supabase_anon_key,
+                "Authorization": f"Bearer {config.supabase_anon_key}",
                 "Content-Type": "application/json",
                 "x-bre-worker-secret": config.worker_secret,
             },
@@ -88,6 +89,7 @@ def process_job(api: BreApi, queue_job: dict) -> None:
     message = queue_job["message"]
     project_id = message["projectId"]
     run_id = message["runId"]
+    run_mode = message.get("mode") or "full"
     sources = message.get("sources") or []
     limits = message.get("limits") or {"maxPages": 50, "maxDepth": 3}
     documents: list[dict] = []
@@ -213,6 +215,7 @@ def process_job(api: BreApi, queue_job: dict) -> None:
         documents=documents,
         discoveredSources=discovered_sources,
         contextFields=context_fields,
+        runMode=run_mode,
         aiModel=os.getenv("BRE_NORMALIZATION_MODEL", "gpt-5.4"),
         aiError=ai_error,
         aiInputHash=ai_input_hash,
