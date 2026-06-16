@@ -58,10 +58,11 @@ export class OnboardingBreApiClient {
     }
 
     async saveContextAnswer(input: SaveContextAnswerV1) {
+        const { action: answerAction, ...payload } = input;
         const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            ...payload,
             action: "save_context_answer",
-            answerAction: input.action,
-            ...input,
+            answerAction,
         });
         return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
     }

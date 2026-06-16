@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
+import re
 from typing import Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
+
+from .field_catalog import FIELD_SPECS
 
 
 ALLOWED_CATEGORIES = {
@@ -14,19 +16,9 @@ ALLOWED_CATEGORIES = {
     "locations", "hours", "contacts", "marketing", "legal",
 }
 
-REQUIRED_DYNAMIC_FIELDS = {
-    "commercial_name",
-    "business_description",
-    "industry",
-    "country",
-    "value_proposition",
-    "primary_offers",
-    "benefits",
-    "ideal_customer_profile",
-    "communication_tone",
-}
-
-ALL_DYNAMIC_FIELDS = REQUIRED_DYNAMIC_FIELDS | {"general_restrictions", "faqs"}
+class EvidenceReference(BaseModel):
+    document_id: str
+    original_text: str
 
 
 class NormalizedField(BaseModel):
@@ -38,7 +30,7 @@ class NormalizedField(BaseModel):
     status: Literal["extracted", "inferred", "not_found", "pending_validation"]
     contradiction: bool = False
     alternatives: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
+    evidence: list[EvidenceReference] = Field(default_factory=list)
     required_for_base: bool = False
 
 
@@ -68,21 +60,9 @@ def _fallback(documents: list[dict]) -> list[dict]:
     first = next((item for item in documents if item.get("extractedText")), None)
     title = (first or {}).get("title") or None
     description = ((first or {}).get("extractedText") or "")[:700] or None
-    values = {
-        "commercial_name": (title, "identity"),
-        "business_description": (description, "identity"),
-        "industry": (None, "classification"),
-        "country": (None, "identity"),
-        "value_proposition": (None, "offer"),
-        "primary_offers": (None, "offer"),
-        "benefits": (None, "offer"),
-        "general_restrictions": (None, "offer"),
-        "ideal_customer_profile": (None, "icp"),
-        "communication_tone": (None, "communication"),
-        "faqs": (None, "faqs"),
-    }
     fields = []
-    for key, (value, category) in values.items():
+    for key, spec in FIELD_SPECS.items():
+        value = title if key == "commercial_name" else description if key == "business_description" else None
         evidence = []
         if value and first:
             evidence.append({
@@ -93,19 +73,106 @@ def _fallback(documents: list[dict]) -> list[dict]:
                 "capturedAt": first.get("capturedAt"),
                 "contentHash": first.get("contentHash"),
             })
+        value = _fallback_faqs(documents) if key == "faqs" else value
+        has_value = bool(value)
         fields.append({
             "key": key,
-            "category": category,
+            "category": spec.category,
             "value": value,
-            "origin": "extracted",
-            "confidence": "low" if value else None,
-            "status": "pending_validation" if value else "not_found",
+            "origin": "inferred" if key == "faqs" and has_value else "extracted",
+            "confidence": "medium" if key == "faqs" and has_value else "low" if has_value else None,
+            "status": "inferred" if key == "faqs" and has_value else "pending_validation" if has_value else "not_found",
             "contradiction": False,
             "alternatives": [],
-            "evidence": evidence,
-            "requiredForBase": key in REQUIRED_DYNAMIC_FIELDS or key == "faqs",
+            "evidence": _first_document_evidence(first) if key == "faqs" and has_value else evidence,
+            "requiredForBase": spec.required_for_base or key == "faqs",
         })
     return fields
+
+
+def _normalized_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _verified_snippet(document: dict, candidate: str) -> str | None:
+    original = _normalized_whitespace(candidate)
+    haystack = _normalized_whitespace(str(document.get("extractedText") or ""))
+    if not original or len(original) < 3 or original.casefold() not in haystack.casefold():
+        return None
+    return original[:4000]
+
+
+def _first_document_evidence(document: dict | None) -> list[dict]:
+    if not document:
+        return []
+    original_text = str(document.get("extractedText") or "").strip()[:1200]
+    if not original_text:
+        return []
+    return [{
+        "sourceId": document.get("sourceId"),
+        "url": document.get("url"),
+        "sourceType": document.get("sourceType", "website"),
+        "originalText": original_text,
+        "capturedAt": document.get("capturedAt"),
+        "contentHash": document.get("contentHash"),
+    }]
+
+
+def _has_meaningful_list(value: object, min_items: int = 3) -> bool:
+    if isinstance(value, list):
+        return len([item for item in value if str(item).strip()]) >= min_items
+    if isinstance(value, str):
+        return len([line for line in value.splitlines() if line.strip()]) >= min_items
+    return False
+
+
+def _fallback_faqs(documents: list[dict], fields: list[dict] | None = None) -> list[str]:
+    text = "\n".join(str(item.get("extractedText") or "") for item in documents).lower()
+    by_key = {field.get("key"): field.get("value") for field in fields or []}
+    questions: list[str] = []
+
+    def add(question: str) -> None:
+        if question not in questions and len(questions) < 5:
+            questions.append(question)
+
+    services = by_key.get("primary_offers") or by_key.get("services") or by_key.get("products")
+    if services or any(word in text for word in ["servicio", "producto", "solución", "consultoría", "automatización"]):
+        add("¿Qué servicios o productos ofrece la empresa?")
+    add("¿Cómo funciona el proceso de atención o implementación?")
+    if any(word in text for word in ["whatsapp", "contacto", "llamada", "formulario", "agenda"]):
+        add("¿Por qué canal puedo contactar o avanzar con el negocio?")
+    else:
+        add("¿Cómo puedo contactar al negocio?")
+    if any(word in text for word in ["precio", "costo", "cotiza", "plan", "paquete", "$", "usd"]):
+        add("¿Cuál es el costo o cómo se cotiza el servicio?")
+    if any(word in text for word in ["horario", "lunes", "martes", "sábado", "domingo"]):
+        add("¿Cuáles son los horarios de atención?")
+    if any(word in text for word in ["quito", "guayaquil", "ecuador", "colombia", "méxico", "ubicación", "sede"]):
+        add("¿Dónde atienden o en qué zonas trabajan?")
+    add("¿Qué beneficios obtiene el cliente al contratar este negocio?")
+    add("¿Qué información necesita el cliente antes de avanzar?")
+
+    return questions[:5]
+
+
+def _ensure_candidate_faqs(fields: list[dict], documents: list[dict]) -> None:
+    faq_field = next((field for field in fields if field.get("key") == "faqs"), None)
+    if not faq_field or _has_meaningful_list(faq_field.get("value")):
+        return
+    generated = _fallback_faqs(documents, fields)
+    if not generated:
+        return
+    first = next((item for item in documents if item.get("extractedText")), None)
+    faq_field.update({
+        "value": generated,
+        "origin": "inferred",
+        "confidence": "medium",
+        "status": "inferred",
+        "contradiction": False,
+        "alternatives": faq_field.get("alternatives") or [],
+        "evidence": faq_field.get("evidence") or _first_document_evidence(first),
+        "requiredForBase": True,
+    })
 
 
 def normalize_context(documents: list[dict]) -> tuple[list[dict], str | None, str]:
@@ -117,10 +184,11 @@ def normalize_context(documents: list[dict]) -> tuple[list[dict], str | None, st
 
     instructions = """
 You normalize public business information for a base-context onboarding.
-Return structured fields covering identity, classification, offer, inferred ICP, communication,
-candidate FAQs, possible locations, visible hours, contacts, marketing, and legal context.
+Return only fields with useful public evidence or a justified inference, plus all eleven dynamic
+fields even when they are not found. Valid keys and categories are supplied below.
 Represent complex or repeated information as a concise list of strings; do not return nested objects.
-Every factual extracted value must cite one or more provided DOC ids. Never invent evidence.
+Every factual extracted value must cite one or more provided DOC ids and include a short exact quote
+copied from that document. Never invent or paraphrase evidence quotes.
 Use origin=inferred for hypotheses, including ICP and any classification not literally stated.
 Every inferred field must use status=inferred even at high confidence.
 Extracted high-confidence literal values may use status=extracted. Medium/low extracted values use
@@ -133,7 +201,10 @@ candidate FAQs can be produced. Missing optional fields may be not_found with re
 Locations and visible hours are context only, never confirmed branches, schedules or appointment data.
 Do not produce objectives, appointments, meetings, calendars, gates, filters, legal consent decisions,
 emoji preferences, templates, or pipeline matching configuration.
-""".strip()
+Valid field catalog:
+""".strip() + "\n" + "\n".join(
+        f"- {key}: {spec.category}" for key, spec in FIELD_SPECS.items()
+    )
     try:
         client = OpenAI()
         response = client.responses.parse(
@@ -153,15 +224,18 @@ emoji preferences, templates, or pipeline matching configuration.
     fields = []
     seen = set()
     for item in parsed.fields:
-        if item.category not in ALLOWED_CATEGORIES or not item.key:
+        spec = FIELD_SPECS.get(item.key)
+        if not spec or item.key in seen or item.category not in ALLOWED_CATEGORIES or item.category != spec.category:
             continue
         seen.add(item.key)
         evidence = []
-        for evidence_id in item.evidence_ids:
-            document = by_id.get(evidence_id)
+        for evidence_ref in item.evidence:
+            document = by_id.get(evidence_ref.document_id)
             if not document:
                 continue
-            original_text = str(document.get("extractedText") or "")[:1200]
+            original_text = _verified_snippet(document, evidence_ref.original_text)
+            if not original_text:
+                continue
             evidence.append({
                 "sourceId": document.get("sourceId"),
                 "url": document.get("url"),
@@ -184,13 +258,16 @@ emoji preferences, templates, or pipeline matching configuration.
             "contradiction": item.contradiction,
             "alternatives": [{"value": alternative} for alternative in item.alternatives],
             "evidence": evidence,
-            "requiredForBase": item.required_for_base,
+            "requiredForBase": spec.required_for_base or (
+                item.key in {"general_restrictions", "faqs"} and item.required_for_base
+            ),
         })
-    for missing_key in ALL_DYNAMIC_FIELDS - seen:
-        category = "faqs" if missing_key == "faqs" else "offer" if missing_key in {"value_proposition", "primary_offers", "benefits", "general_restrictions"} else "identity"
+    for missing_key, spec in FIELD_SPECS.items():
+        if missing_key in seen:
+            continue
         fields.append({
             "key": missing_key,
-            "category": category,
+            "category": spec.category,
             "value": None,
             "origin": "extracted",
             "confidence": None,
@@ -198,6 +275,7 @@ emoji preferences, templates, or pipeline matching configuration.
             "contradiction": False,
             "alternatives": [],
             "evidence": [],
-            "requiredForBase": missing_key in REQUIRED_DYNAMIC_FIELDS or missing_key == "faqs",
+            "requiredForBase": spec.required_for_base or missing_key == "faqs",
         })
+    _ensure_candidate_faqs(fields, documents)
     return fields, None, input_hash

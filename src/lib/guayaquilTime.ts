@@ -16,6 +16,16 @@ const hourFormatter = new Intl.DateTimeFormat('en-US', {
 
 export const getGuayaquilDateString = (date = new Date()) => dateFormatter.format(date);
 
+const timeFormatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: GUAYAQUIL_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+});
+
+export const getGuayaquilTimeString = (date = new Date()) => timeFormatter.format(date);
+
 export const getGuayaquilHour = (date = new Date()) => {
     const formatted = hourFormatter.format(date);
     return Number(formatted === '24' ? '0' : formatted);

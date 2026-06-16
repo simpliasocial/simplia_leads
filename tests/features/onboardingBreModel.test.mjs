@@ -5,6 +5,9 @@ const jiti = createJiti(import.meta.url);
 const {
     buildDynamicQuestions,
     canFinalizeBaseContext,
+    areProvidedSourcesReady,
+    CONTEXT_FIELD_LABELS,
+    DYNAMIC_FIELD_PLACEHOLDERS,
     validateInternalBusinessData,
 } = jiti("../../src/features/onboarding-bre/model/onboardingBreModel.ts");
 
@@ -55,6 +58,12 @@ test("questions are only generated for the eleven permitted context fields", () 
     assert.deepEqual(questions.map((question) => question.fieldKey), ["commercial_name"]);
 });
 
+test("context field labels and writing examples are Spanish user-facing text", () => {
+    assert.equal(CONTEXT_FIELD_LABELS.communication_tone, "Tono de comunicación");
+    assert.equal(CONTEXT_FIELD_LABELS.faqs, "FAQs (preguntas frecuentes) candidatas");
+    assert.match(DYNAMIC_FIELD_PLACEHOLDERS.faqs, /¿Qué servicios ofrecen\?/);
+});
+
 test("contradictions generate a resolution question and keep alternatives", () => {
     const alternatives = [{ value: "Ecuador" }, { value: "Colombia" }];
     const [question] = buildDynamicQuestions([
@@ -77,4 +86,13 @@ test("all internal metrics and a business model are mandatory", () => {
 test("base context only finalizes with resolved questions and valid internal data", () => {
     assert.equal(canFinalizeBaseContext([field()], validInternal), true);
     assert.equal(canFinalizeBaseContext([field({ origin: "inferred", status: "inferred" })], validInternal), false);
+});
+
+test("provided sources must produce evidence while discovered failures stay complementary", () => {
+    const website = { type: "website", origin: "user", status: "completed", url: "https://example.com" };
+    const facebook = { type: "facebook", origin: "user", status: "partial", url: "https://facebook.com/example" };
+    const discovered = { type: "linkedin", origin: "discovered", status: "platform_blocked", url: "https://linkedin.com/company/example" };
+
+    assert.equal(areProvidedSourcesReady([website, facebook, discovered]), true);
+    assert.equal(areProvidedSourcesReady([website, { ...facebook, status: "failed" }]), false);
 });

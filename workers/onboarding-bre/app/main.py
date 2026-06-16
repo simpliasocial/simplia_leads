@@ -201,6 +201,14 @@ def process_job(api: BreApi, queue_job: dict) -> None:
         )
 
     website_ok = any(item["sourceType"] == "website" and item["status"] == "completed" for item in source_results)
+    if run_mode == "source_retry":
+        existing = api.call(
+            "get_worker_normalization_documents",
+            projectId=project_id,
+            excludedSourceIds=list(queued_source_ids),
+        )
+        website_ok = website_ok or bool(existing.get("websiteCompleted"))
+        documents = (existing.get("documents") or []) + documents
     context_fields = []
     ai_error = None
     ai_input_hash = None

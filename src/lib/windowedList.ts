@@ -35,3 +35,5 @@ export const buildPaginatedListState = <T,>(
         hasVerticalScroll: visibleItems.length > WINDOWED_LIST_VISIBLE_ROWS,
     };
 };
+
+export const buildWindowedListState = buildPaginatedListState;

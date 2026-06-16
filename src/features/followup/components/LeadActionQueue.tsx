@@ -14,16 +14,16 @@ import { useDashboardContext } from "@/context/useDashboardContext";
 import type { ResolvedConversation } from "@/context/dashboardDataTypes";
 import type { DashboardQueueLead } from "@/application/dashboard";
 import { useAuth } from "@/context/useAuth";
-import { canConfigureMetaCapi, isAdmin } from "@/domain/auth/permissions";
+import { isAdmin } from "@/domain/auth/permissions";
 import { DateRangePicker } from "@/shared/ui/dashboard/DateRangePicker";
 import { ChannelSelector } from "@/shared/ui/dashboard/ChannelSelector";
 import { TabExportMenu } from "@/features/dashboard/components/TabExportMenu";
-import { getGuayaquilDateString, getGuayaquilHourLabel } from "@/lib/guayaquilTime";
+import { getGuayaquilDateString, getGuayaquilTimeString } from "@/lib/guayaquilTime";
 import type { MinifiedConversation } from "@/services/StorageService";
 import type { Inbox } from "@/domain/lead";
+import { metaCapiClient } from "@/infrastructure/supabase/MetaCapiClient";
 import { DateRange } from "react-day-picker";
 import {
-    cleanText,
     getAttrs,
     getLeadChannelName,
     getLeadEmail,
@@ -31,7 +31,6 @@ import {
     getLeadOperationDate,
     getLeadPhone,
     getRawLeadPhone,
-    parseAmount,
 } from "@/lib/leadDisplay";
 import {
     formatBusinessLabel,
@@ -85,12 +84,7 @@ import { FollowupQueueTable } from "./FollowupQueueTable";
 import { SalesReportPanel } from "./SalesReportPanel";
 import { HumanFlowConfigPanel } from "./HumanFlowConfigPanel";
 import { LeadMessageHistoryDialog } from "./LeadMessageHistoryDialog";
-import { MetaCapiConfigSection } from "./MetaCapiConfigSection";
-import {
-    metaCapiClient,
-    type MetaCapiEventInput,
-    type MetaCapiEventKind,
-} from "@/infrastructure/supabase/MetaCapiClient";
+import type { MetaCapiEventKind, MetaCapiLeadPayload } from "../model/metaCapiModel";
 
 type QueueLead = Omit<DashboardQueueLead, "id" | "labels" | "meta" | "source"> &
     Partial<ResolvedConversation> & {
@@ -111,10 +105,8 @@ type QueueLead = Omit<DashboardQueueLead, "id" | "labels" | "meta" | "source"> &
 
 type WorkflowModalStep = "closed" | "edit" | "confirm" | "saving";
 
-const toAccountId = (value: unknown) => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-};
+const getWorkflowString = (value: unknown, fallback = "") =>
+    String(value ?? fallback).trim();
 
 const LeadActionQueue = () => {
     const {
@@ -203,6 +195,48 @@ const LeadActionQueue = () => {
         return getLeadChannelName(lead, inbox);
     }, [inboxMap]);
 
+    const buildMetaCapiLeadPayload = useCallback((lead: QueueLead, meetingId?: unknown): MetaCapiLeadPayload => {
+        const channel = getChannelName(lead);
+        return {
+            id: lead.id,
+            fullName: getLeadName(lead),
+            email: getLeadEmail(lead),
+            phone: getRawLeadPhone(lead) || getLeadPhone(lead, channel),
+            conversationId: String(lead.id),
+            meetingId: getWorkflowString(meetingId, String(lead.id)),
+        };
+    }, [getChannelName]);
+
+    const sendMetaCapiWorkflowEvent = useCallback(async (params: {
+        eventKind: Exclude<MetaCapiEventKind, "test">;
+        lead: QueueLead;
+        appointmentDate: string;
+        appointmentTime: string;
+        meetingId?: unknown;
+    }) => {
+        try {
+            const result = await metaCapiClient.sendEvent({
+                eventKind: params.eventKind,
+                lead: buildMetaCapiLeadPayload(params.lead, params.meetingId),
+                channel: getChannelName(params.lead),
+                appointmentDate: params.appointmentDate,
+                appointmentTime: params.appointmentTime,
+            });
+
+            if (result.skipped) {
+                if (result.reason && !result.reason.toLowerCase().includes("no esta configurado")) {
+                    toast.info(`Meta CAPI omitido: ${result.reason}`);
+                }
+                return;
+            }
+
+            toast.success(result.testMode ? "Meta CAPI enviado en modo test" : "Meta CAPI enviado correctamente");
+        } catch (capiError) {
+            console.error("Meta CAPI event failed after workflow update:", capiError);
+            toast.error("El cambio se guardó, pero Meta CAPI no pudo recibir el evento.");
+        }
+    }, [buildMetaCapiLeadPayload, getChannelName]);
+
     const getQueueSearchValues = useCallback((lead: QueueLead) => {
         const attrs = getAttrs(lead);
         const channel = getChannelName(lead);
@@ -248,11 +282,11 @@ const LeadActionQueue = () => {
             getInboxId: (lead) => lead.inbox_id,
             getOperationDate: getLeadOperationDate,
             getSearchValues: (lead) => [
-                    lead.id,
-                    getLeadName(lead),
-                    getLeadPhone(lead, getChannelName(lead)),
-                    getLeadEmail(lead),
-                    getChannelName(lead)
+                lead.id,
+                getLeadName(lead),
+                getLeadPhone(lead, getChannelName(lead)),
+                getLeadEmail(lead),
+                getChannelName(lead)
             ],
         });
     }, [conversations, globalFilters.selectedInboxes, humanSaleTargetLabel, salesEndDate, salesSearch, salesStartDate, getChannelName]);
@@ -271,62 +305,6 @@ const LeadActionQueue = () => {
         salesTotal,
         getChannelName,
     });
-    const canManageMetaCapi = canConfigureMetaCapi(role);
-
-    const buildMetaCapiEvent = useCallback((
-        lead: QueueLead,
-        eventKind: MetaCapiEventKind,
-        fieldPayload: Record<string, unknown>,
-    ): MetaCapiEventInput => {
-        const attrs = {
-            ...getAttrs(lead),
-            ...fieldPayload,
-        };
-        const channel = getChannelName(lead);
-        const resolvedName = cleanText(attrs.nombre_completo) || (getLeadName(lead) === "Sin Nombre" ? "" : getLeadName(lead));
-        const resolvedPhone = cleanText(attrs.celular) || getLeadPhone(lead, channel);
-        const resolvedEmail = cleanText(attrs.correo) || getLeadEmail(lead);
-        const meetingId = cleanText(attrs.meeting_id || attrs.id_cita || attrs.cita_id || lead.id);
-        const isSale = eventKind === "sale";
-        const appointmentDate = isSale
-            ? cleanText(attrs.fecha_monto_operacion) || getLeadOperationDate(lead) || getGuayaquilDateString()
-            : cleanText(attrs.fecha_visita);
-        const appointmentTime = isSale
-            ? getGuayaquilHourLabel()
-            : cleanText(attrs.hora_visita);
-
-        return {
-            accountId: toAccountId(lead.account_id),
-            eventKind,
-            conversationId: String(lead.id),
-            meetingId,
-            eventName: isSale ? "Purchase" : undefined,
-            name: resolvedName,
-            email: resolvedEmail,
-            phone: resolvedPhone,
-            channel,
-            appointmentDate,
-            appointmentTime,
-            value: isSale ? parseAmount(attrs.monto_operacion) : undefined,
-            currency: "USD",
-        };
-    }, [getChannelName]);
-
-    const sendMetaCapiAfterWorkflow = useCallback(async (event: MetaCapiEventInput) => {
-        try {
-            const result = await metaCapiClient.sendEvent(event);
-            if (result.status === "skipped") {
-                toast.info(`Cambio guardado. Meta CAPI omitido: ${result.message || "sin configuracion activa"}`);
-                return;
-            }
-            if (!result.ok || result.status === "error") {
-                toast.warning(`Cambio guardado, pero Meta CAPI fallo: ${result.error || "revisa la auditoria"}`);
-            }
-        } catch (metaError) {
-            console.error("Meta CAPI send failed after successful workflow update:", metaError);
-            toast.warning("Cambio guardado, pero Meta CAPI no recibio el evento");
-        }
-    }, []);
 
     const closeAppointmentWorkflow = (force = false) => {
         if (isSavingAppointment && !force) return;
@@ -411,8 +389,18 @@ const LeadActionQueue = () => {
                 successMessage: "Cita guardada correctamente"
             });
 
-            void sendMetaCapiAfterWorkflow(buildMetaCapiEvent(appointmentLead, "appointment", appointmentPayload));
+            const appointmentDate = getWorkflowString(appointmentPayload.fecha_visita, getGuayaquilDateString());
+            const appointmentTime = getWorkflowString(appointmentPayload.hora_visita, getGuayaquilTimeString());
+            const appointmentMeetingId = appointmentPayload.meeting_id || appointmentPayload.id || appointmentLead.id;
+
             closeAppointmentWorkflow(true);
+            void sendMetaCapiWorkflowEvent({
+                eventKind: "appointment",
+                lead: appointmentLead,
+                appointmentDate,
+                appointmentTime,
+                meetingId: appointmentMeetingId,
+            });
         } catch (appointmentError) {
             console.error("Error confirming human appointment:", appointmentError);
             toast.error(friendlyErrorMessage("saveAppointment"));
@@ -494,8 +482,18 @@ const LeadActionQueue = () => {
                 successMessage: "Venta guardada correctamente"
             });
 
-            void sendMetaCapiAfterWorkflow(buildMetaCapiEvent(operationLead, "sale", salePayload));
+            const operationDate = getWorkflowString(salePayload.fecha_monto_operacion, getGuayaquilDateString());
+            const operationTime = getGuayaquilTimeString();
+            const operationMeetingId = salePayload.meeting_id || salePayload.id || operationLead.id;
+
             closeOperationWorkflow(true);
+            void sendMetaCapiWorkflowEvent({
+                eventKind: "sale",
+                lead: operationLead,
+                appointmentDate: operationDate,
+                appointmentTime: operationTime,
+                meetingId: operationMeetingId,
+            });
         } catch (operationError) {
             console.error("Error confirming operation:", operationError);
             toast.error(friendlyErrorMessage("saveSale"));
@@ -512,8 +510,20 @@ const LeadActionQueue = () => {
     };
 
     const handleConfirmTagChange = () => {
-        if (!newTag) return;
-        setIsTagConfirmOpen(true);
+        if (!newTag || !selectedLead) return;
+        const normalizedTag = newTag.toLowerCase().replace(/_/g, " ");
+        const isAppointment = newTag === humanAppointmentTargetLabel || normalizedTag.includes("agenda cita") || normalizedTag.includes("cita agendada");
+        const isSale = newTag === humanSaleTargetLabel || normalizedTag.includes("venta exitosa");
+
+        if (isAppointment) {
+            setIsTagDialogOpen(false);
+            openAppointmentDialog(selectedLead);
+        } else if (isSale) {
+            setIsTagDialogOpen(false);
+            openOperationDialog(selectedLead);
+        } else {
+            setIsTagConfirmOpen(true);
+        }
     };
 
     const executeTagChange = async () => {
@@ -608,7 +618,6 @@ const LeadActionQueue = () => {
                     updateHumanConfigList={updateHumanConfigList}
                     updateHumanConfigLabel={updateHumanConfigLabel}
                     saveHumanConfig={saveHumanConfig}
-                    metaCapiSection={<MetaCapiConfigSection canConfigure={canManageMetaCapi} />}
                 />
             )}
 
@@ -687,11 +696,11 @@ const LeadActionQueue = () => {
                         </div>
 
                         {appointmentModalStep === "edit" && (
-                            <ScrollArea className="max-h-[380px] pr-4">
+                            <div className="max-h-[60vh] overflow-y-auto pr-4">
                                 <div className="space-y-4">
                                     {configuredAppointmentFields.map(renderAppointmentField)}
                                 </div>
-                            </ScrollArea>
+                            </div>
                         )}
 
                         {appointmentModalStep !== "edit" && (
@@ -780,11 +789,11 @@ const LeadActionQueue = () => {
                         </div>
 
                         {operationModalStep === "edit" && (
-                            <ScrollArea className="max-h-[380px] pr-4">
+                            <div className="max-h-[60vh] overflow-y-auto pr-4">
                                 <div className="space-y-4">
                                     {configuredSaleFields.map(renderSaleField)}
                                 </div>
-                            </ScrollArea>
+                            </div>
                         )}
 
                         {operationModalStep !== "edit" && (

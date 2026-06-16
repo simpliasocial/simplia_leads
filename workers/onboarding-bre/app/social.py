@@ -28,6 +28,24 @@ class PartialExtractionError(RuntimeError):
         self.documents = documents
 
 
+SOURCE_TYPE_LABELS = {
+    "instagram": "Instagram",
+    "facebook": "Facebook",
+    "tiktok": "TikTok",
+    "linkedin": "LinkedIn",
+    "youtube": "YouTube",
+    "other": "La fuente pública",
+}
+
+
+def _no_public_data_message(source_type: str) -> str:
+    source_name = SOURCE_TYPE_LABELS.get(source_type, "La fuente pública")
+    return (
+        f"{source_name} no expuso datos públicos utilizables. La fuente existe o fue proporcionada, "
+        "pero no tiene contenido adicional disponible para extraer sin iniciar sesión o sin permisos especiales."
+    )
+
+
 def _document(url: str, text: str, raw: str, metadata: dict | None = None, title: str = "") -> dict:
     return {
         "kind": "document",
@@ -42,6 +60,27 @@ def _document(url: str, text: str, raw: str, metadata: dict | None = None, title
     }
 
 
+def _minimal_source_document(source_type: str, url: str, raw: str = "", reason: str | None = None) -> dict:
+    normalized = normalize_public_url(url)
+    source_name = SOURCE_TYPE_LABELS.get(source_type, "La fuente pública")
+    message = reason or _no_public_data_message(source_type)
+    metadata = {
+        "sourceType": source_type,
+        "sourceName": source_name,
+        "noPublicData": True,
+        "extractionNote": message,
+    }
+    if source_type == "tiktok":
+        metadata["username"] = _tiktok_username_from_url(normalized)
+    text = f"{source_name}: {normalized}. {message}"
+    return _document(normalized, text, raw or json.dumps(metadata, ensure_ascii=False), metadata, source_name)
+
+
+def _partial_no_public_data(source_type: str, url: str, raw: str = "", reason: str | None = None) -> PartialExtractionError:
+    message = reason or _no_public_data_message(source_type)
+    return PartialExtractionError(message, [_minimal_source_document(source_type, url, raw, message)])
+
+
 def _extract_readable_text(raw: str, url: str, fallback_text: str = "") -> str:
     extracted = trafilatura.extract(raw, url=url, favor_recall=True) or ""
     if len(extracted.strip()) >= 80:
@@ -51,6 +90,24 @@ def _extract_readable_text(raw: str, url: str, fallback_text: str = "") -> str:
         soup = BeautifulSoup(raw, "html.parser")
         visible_text = soup.get_text("\n", strip=True)
     return visible_text
+
+
+def _public_metadata(raw: str) -> tuple[dict, str]:
+    soup = BeautifulSoup(raw, "html.parser")
+    metadata: dict[str, str] = {}
+    for tag in soup.find_all("meta"):
+        key = tag.get("property") or tag.get("name")
+        content = tag.get("content")
+        if key and content and (str(key).startswith("og:") or str(key).startswith("twitter:") or key in {"description", "keywords"}):
+            metadata[str(key)] = str(content)[:4000]
+    lines = list(dict.fromkeys(value.strip() for value in metadata.values() if value.strip()))
+    return metadata, "\n".join(lines)
+
+
+def _looks_like_auth_wall(text: str) -> bool:
+    lowered = text.casefold()
+    markers = ("sign up | linkedin", "agree & join linkedin", "log in or sign up", "inicia sesión o regístrate")
+    return any(marker in lowered for marker in markers)
 
 
 def fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
@@ -71,11 +128,14 @@ def fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
                 raise PlatformBlockedError("LinkedIn blocked automated public extraction (HTTP 999)")
             response.raise_for_status()
             raw = response.text
-            text = _extract_readable_text(raw, current)
+            metadata, metadata_text = _public_metadata(raw)
+            text = "\n".join(filter(None, [metadata_text, _extract_readable_text(raw, current)]))
             if len(text.strip()) >= 120 or not use_browser_fallback:
                 soup = BeautifulSoup(raw, "html.parser")
                 title = soup.title.string.strip() if soup.title and soup.title.string else ""
-                return _document(current, text, raw, title=title)
+                if _looks_like_auth_wall(text):
+                    raise PlatformBlockedError("Platform requires authentication for this public URL")
+                return _document(current, text, raw, metadata=metadata, title=title)
             break
     if not use_browser_fallback:
         raise PlatformBlockedError("Public page did not expose readable content")
@@ -108,10 +168,13 @@ def fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
         finally:
             page.unroute("**/*", guard_route)
             browser.close()
-    text = _extract_readable_text(raw, final_url, visible_text)
+    metadata, metadata_text = _public_metadata(raw)
+    text = "\n".join(filter(None, [metadata_text, _extract_readable_text(raw, final_url, visible_text)]))
     if len(text.strip()) < 80:
         raise PlatformBlockedError("Platform requires authentication or blocked public extraction")
-    return _document(final_url, text, raw, title=title)
+    if _looks_like_auth_wall(text):
+        raise PlatformBlockedError("Platform requires authentication for this public URL")
+    return _document(final_url, text, raw, metadata=metadata, title=title)
 
 
 def scrape_instagram(url: str) -> list[dict]:
@@ -185,35 +248,96 @@ def scrape_youtube(url: str) -> list[dict]:
 
 
 def scrape_tiktok(url: str) -> list[dict]:
+    profile_document = _scrape_tiktok_public_profile(url)
+    if profile_document.get("metadata", {}).get("noPublicData"):
+        raise PartialExtractionError(_no_public_data_message("tiktok"), [profile_document])
     try:
         metadata = _yt_dlp_metadata(url)
         raw = json.dumps(metadata, ensure_ascii=False)
-        return [_document(url, raw, raw, metadata, str(metadata.get("title") or "TikTok"))]
-    except Exception as exc:
-        if "does not have any videos posted" in str(exc).lower():
-            username_match = re.search(r"tiktok\.com/@([^/?#]+)", url)
-            username = username_match.group(1) if username_match else ""
-            payload = {
-                "username": username,
-                "profileUrl": url,
-                "recentVideos": [],
-                "extractionStatus": "no_public_videos",
-            }
-            raw = json.dumps(payload, ensure_ascii=False)
-            text = f"TikTok profile: @{username}\nNo public videos were exposed by the platform."
-            document = _document(url, text, raw, payload, f"@{username} | TikTok")
-            raise PartialExtractionError(
-                "El perfil es publico, pero TikTok no expuso videos o contenido adicional para extraer.",
-                [document],
-            ) from exc
-        return [fetch_public_html(url)]
+        entries = metadata.get("entries") or []
+        if not entries:
+            return [profile_document]
+        text = "\n".join(
+            filter(None, [
+                str(metadata.get("title") or ""),
+                str(metadata.get("description") or ""),
+                *[str(item.get("title") or item.get("description") or "") for item in entries],
+            ])
+        )
+        return [profile_document, _document(url, text, raw, metadata, str(metadata.get("title") or "TikTok"))]
+    except Exception:
+        return [profile_document]
+
+
+def _tiktok_username_from_url(url: str) -> str:
+    match = re.search(r"tiktok\.com/@([^/?#]+)", url)
+    return match.group(1) if match else urlsplit(url).path.strip("/").lstrip("@") or "perfil"
+
+
+def _tiktok_minimal_document(url: str, raw: str) -> dict:
+    return _minimal_source_document("tiktok", url, raw, _no_public_data_message("tiktok"))
+
+
+def _has_useful_tiktok_data(public_data: dict) -> bool:
+    if public_data.get("biography") or public_data.get("bioLink") or public_data.get("verified"):
+        return True
+    for key in ("followers", "following", "likes", "videos"):
+        value = public_data.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return True
+    return False
+
+
+def _scrape_tiktok_public_profile(url: str) -> dict:
+    normalized = normalize_public_url(url)
+    with httpx.Client(timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as client:
+        response = client.get(normalized)
+        response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    script = soup.find("script", id="__UNIVERSAL_DATA_FOR_REHYDRATION__")
+    if not script or not script.string:
+        return _tiktok_minimal_document(normalized, response.text)
+    payload = json.loads(script.string)
+    detail = payload.get("__DEFAULT_SCOPE__", {}).get("webapp.user-detail", {})
+    user_info = detail.get("userInfo") or {}
+    user = user_info.get("user") or {}
+    stats = user_info.get("stats") or {}
+    if not user.get("uniqueId"):
+        return _tiktok_minimal_document(normalized, response.text)
+    public_data = {
+        "username": user.get("uniqueId"),
+        "nickname": user.get("nickname"),
+        "biography": user.get("signature"),
+        "verified": user.get("verified"),
+        "language": user.get("language"),
+        "bioLink": (user.get("bioLink") or {}).get("link"),
+        "followers": stats.get("followerCount"),
+        "following": stats.get("followingCount"),
+        "likes": stats.get("heartCount"),
+        "videos": stats.get("videoCount"),
+    }
+    text = "\n".join(
+        f"{key}: {value}" for key, value in public_data.items() if value not in (None, "", [])
+    )
+    raw = json.dumps(public_data, ensure_ascii=False)
+    document = _document(normalized, text, raw, public_data, str(user.get("nickname") or user.get("uniqueId")))
+    if not _has_useful_tiktok_data(public_data):
+        document["metadata"]["noPublicData"] = True
+        document["metadata"]["extractionNote"] = _no_public_data_message("tiktok")
+        document["extractedText"] = f"{document['extractedText']}\n{_no_public_data_message('tiktok')}".strip()
+    return document
 
 
 def scrape_social(source_type: str, url: str) -> list[dict]:
-    if source_type == "instagram":
-        return scrape_instagram(url)
-    if source_type == "youtube":
-        return scrape_youtube(url)
-    if source_type == "tiktok":
-        return scrape_tiktok(url)
-    return [fetch_public_html(url, use_browser_fallback=source_type in {"facebook", "linkedin", "other"})]
+    try:
+        if source_type == "instagram":
+            return scrape_instagram(url)
+        if source_type == "youtube":
+            return scrape_youtube(url)
+        if source_type == "tiktok":
+            return scrape_tiktok(url)
+        return [fetch_public_html(url, use_browser_fallback=source_type in {"facebook", "linkedin", "other"})]
+    except PartialExtractionError:
+        raise
+    except PlatformBlockedError as exc:
+        raise _partial_no_public_data(source_type, url, reason=_no_public_data_message(source_type)) from exc

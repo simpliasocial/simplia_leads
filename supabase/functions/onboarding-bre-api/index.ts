@@ -25,6 +25,14 @@ const sourceTypes = new Set([
     "website", "instagram", "facebook", "tiktok", "linkedin", "youtube", "other",
 ]);
 
+const sourceHosts: Record<string, string[]> = {
+    instagram: ["instagram.com"],
+    facebook: ["facebook.com", "fb.com"],
+    tiktok: ["tiktok.com"],
+    linkedin: ["linkedin.com"],
+    youtube: ["youtube.com", "youtu.be"],
+};
+
 const json = (payload: unknown, status = 200) => {
     const versionedPayload = payload && typeof payload === "object" && !Array.isArray(payload)
         ? { apiVersion: 1, ...(payload as Record<string, unknown>) }
@@ -50,6 +58,11 @@ const assert = (condition: unknown, message: string, status = 400): asserts cond
         error.status = status;
         throw error;
     }
+};
+
+const assertDb = (result: { error?: unknown }) => {
+    if (result.error) throw result.error;
+    return result;
 };
 
 const isPrivateIpv4 = (host: string) => {
@@ -88,6 +101,19 @@ const normalizePublicUrl = (value: unknown) => {
     if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) url.port = "";
     url.hostname = host;
     return url.toString();
+};
+
+const hostMatches = (host: string, domains: string[]) => domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+
+const assertSourceUrlMatchesType = (sourceType: string, normalizedUrl: string) => {
+    const host = new URL(normalizedUrl).hostname.toLowerCase();
+    if (sourceHosts[sourceType]) {
+        assert(hostMatches(host, sourceHosts[sourceType]), `La URL no corresponde a ${sourceType}.`);
+    }
+    if (sourceType === "website") {
+        const social = Object.values(sourceHosts).some((domains) => hostMatches(host, domains));
+        assert(!social, "El sitio web oficial no puede ser una URL de red social.");
+    }
 };
 
 const validateMoney = (metric: any, label: string) => {
@@ -229,7 +255,7 @@ serve(async (req) => {
         const bre = admin.schema("bre");
         const body = await req.json();
         const action = String(body?.action || "");
-        const workerActions = new Set(["claim_worker_job", "register_discovered_sources", "update_worker_progress", "complete_worker_job", "fail_worker_job"]);
+        const workerActions = new Set(["claim_worker_job", "get_worker_normalization_documents", "register_discovered_sources", "update_worker_progress", "complete_worker_job", "fail_worker_job"]);
 
         if (workerActions.has(action)) {
             const expectedSecret = Deno.env.get("BRE_WORKER_SECRET") || "";
@@ -252,6 +278,42 @@ serve(async (req) => {
                 });
                 if (error) throw error;
                 return json({ job: data?.[0] || null });
+            }
+
+            if (action === "get_worker_normalization_documents") {
+                const projectId = String(body.projectId || "");
+                assert(projectId, "projectId es obligatorio.");
+                const excludedSourceIds = Array.isArray(body.excludedSourceIds)
+                    ? body.excludedSourceIds.map(String).filter(Boolean)
+                    : [];
+                let query = bre.from("source_documents")
+                    .select("source_id,url,title,extracted_text,content_hash,captured_at,metadata,sources(source_type)")
+                    .eq("project_id", projectId)
+                    .order("captured_at", { ascending: false })
+                    .limit(250);
+                if (excludedSourceIds.length) query = query.not("source_id", "in", `(${excludedSourceIds.join(",")})`);
+                const { data: storedDocuments, error: documentsError } = await query;
+                if (documentsError) throw documentsError;
+                const uniqueDocuments = new Map<string, any>();
+                for (const document of storedDocuments || []) {
+                    const key = `${document.source_id}:${document.url}`;
+                    if (!uniqueDocuments.has(key) && document.extracted_text) uniqueDocuments.set(key, document);
+                }
+                const { data: website } = await bre.from("sources")
+                    .select("status").eq("project_id", projectId).eq("source_type", "website").maybeSingle();
+                return json({
+                    websiteCompleted: website?.status === "completed",
+                    documents: Array.from(uniqueDocuments.values()).map((document: any) => ({
+                        sourceId: document.source_id,
+                        sourceType: document.sources?.source_type || "other",
+                        url: document.url,
+                        title: document.title,
+                        extractedText: document.extracted_text,
+                        contentHash: document.content_hash,
+                        capturedAt: document.captured_at,
+                        metadata: document.metadata || {},
+                    })),
+                });
             }
 
             if (action === "register_discovered_sources") {
@@ -365,20 +427,20 @@ serve(async (req) => {
                 const status = ["completed", "partial", "platform_blocked", "failed"].includes(sourceResult.status)
                     ? sourceResult.status
                     : "failed";
-                await bre.from("sources").update({
+                assertDb(await bre.from("sources").update({
                     status,
                     pages_processed: Number(sourceResult.pagesProcessed || 0),
                     error_code: sourceResult.errorCode || null,
                     error_message: sourceResult.errorMessage || null,
                     last_scraped_at: new Date().toISOString(),
-                }).eq("id", sourceResult.sourceId).eq("project_id", projectId);
-                await bre.from("scrape_source_runs").update({
+                }).eq("id", sourceResult.sourceId).eq("project_id", projectId));
+                assertDb(await bre.from("scrape_source_runs").update({
                     status,
                     pages_processed: Number(sourceResult.pagesProcessed || 0),
                     error_code: sourceResult.errorCode || null,
                     error_message: sourceResult.errorMessage || null,
                     finished_at: new Date().toISOString(),
-                }).eq("run_id", runId).eq("source_id", sourceResult.sourceId);
+                }).eq("run_id", runId).eq("source_id", sourceResult.sourceId));
             }
 
             for (const discovered of discoveredSources) {
@@ -412,7 +474,7 @@ serve(async (req) => {
                     );
                     if (uploadError) storagePath = null;
                 }
-                await bre.from("source_documents").upsert({
+                assertDb(await bre.from("source_documents").upsert({
                     project_id: projectId,
                     run_id: runId,
                     source_id: sourceId,
@@ -423,7 +485,7 @@ serve(async (req) => {
                     storage_path: storagePath,
                     metadata: document.metadata || {},
                     captured_at: document.capturedAt || new Date().toISOString(),
-                }, { onConflict: "run_id,source_id,content_hash" });
+                }, { onConflict: "run_id,source_id,content_hash" }));
             }
 
             for (const field of fields) {
@@ -449,6 +511,7 @@ serve(async (req) => {
                 if (fieldError) throw fieldError;
 
                 const evidence = Array.isArray(field.evidence) ? field.evidence : [];
+                assertDb(await bre.from("field_evidence").delete().eq("context_field_id", savedField.id));
                 if (evidence.length > 0) {
                     const rows = evidence.filter((item: any) => item.url && item.originalText && item.contentHash).map((item: any) => ({
                         context_field_id: savedField.id,
@@ -459,10 +522,10 @@ serve(async (req) => {
                         captured_at: item.capturedAt || new Date().toISOString(),
                         content_hash: item.contentHash,
                     }));
-                    if (rows.length) await bre.from("field_evidence").upsert(rows, {
+                    if (rows.length) assertDb(await bre.from("field_evidence").upsert(rows, {
                         onConflict: "context_field_id,url,content_hash",
                         ignoreDuplicates: true,
-                    });
+                    }));
                 }
             }
 
@@ -480,7 +543,7 @@ serve(async (req) => {
             const runStatus = runIncludesWebsite && !websiteSucceeded
                 ? "failed"
                 : completedCount === sourceResults.length ? "completed" : "partial";
-            await bre.from("scrape_runs").update({
+            assertDb(await bre.from("scrape_runs").update({
                 status: runStatus,
                 pages_processed: sourceResults.reduce((sum: number, item: any) => sum + Number(item.pagesProcessed || 0), 0),
                 sources_completed: sourceResults.length,
@@ -490,12 +553,19 @@ serve(async (req) => {
                     message: item.errorMessage,
                 })),
                 finished_at: new Date().toISOString(),
-            }).eq("id", runId).eq("project_id", projectId);
-            await bre.from("projects").update({
-                status: websiteSucceeded ? "review_context" : "sources_ready",
-                current_step: websiteSucceeded ? "context" : "processing",
-            }).eq("id", projectId);
-            await bre.from("ai_runs").insert({
+            }).eq("id", runId).eq("project_id", projectId));
+            const { data: userSources, error: userSourcesError } = await bre.from("sources")
+                .select("id,source_type,status")
+                .eq("project_id", projectId)
+                .eq("source_origin", "user");
+            if (userSourcesError) throw userSourcesError;
+            const unresolvedUserSources = (userSources || []).filter((source: any) => !["completed", "partial"].includes(source.status));
+            const sourcesReady = websiteSucceeded && unresolvedUserSources.length === 0;
+            assertDb(await bre.from("projects").update({
+                status: sourcesReady ? "review_context" : "sources_ready",
+                current_step: sourcesReady ? "context" : "processing",
+            }).eq("id", projectId));
+            assertDb(await bre.from("ai_runs").insert({
                 project_id: projectId,
                 scrape_run_id: runId,
                 purpose: "normalize_context",
@@ -505,16 +575,21 @@ serve(async (req) => {
                 output_payload: { fieldCount: fields.length },
                 error_message: body.aiError || null,
                 completed_at: new Date().toISOString(),
-            });
+            }));
             if (body.messageId) await admin.rpc("bre_archive_scrape_job", { message_id: body.messageId });
-            await bre.from("audit_logs").insert({
+            assertDb(await bre.from("audit_logs").insert({
                 project_id: projectId,
                 actor_type: "worker",
                 action: "scrape_completed",
                 entity_type: "scrape_run",
                 entity_id: runId,
-                payload: { runStatus, sourceCount: sourceResults.length, fieldCount: fields.length },
-            });
+                payload: {
+                    runStatus,
+                    sourceCount: sourceResults.length,
+                    fieldCount: fields.length,
+                    unresolvedUserSourceIds: unresolvedUserSources.map((source: any) => source.id),
+                },
+            }));
             return json({ success: true, runStatus });
         }
 
@@ -704,15 +779,19 @@ serve(async (req) => {
             const project = await assertProjectAccess(String(body.projectId || ""));
             assert(project.status !== "base_context_complete", "El contexto base ya fue finalizado.");
             const sources = Array.isArray(body.sources) ? body.sources : [];
-            const normalized = sources.map((source: any) => ({
-                type: sourceTypes.has(source.type) ? source.type : "other",
-                url: normalizePublicUrl(source.url),
-            }));
+            const normalized = sources.map((source: any) => {
+                const type = sourceTypes.has(source.type) ? source.type : "other";
+                const url = normalizePublicUrl(source.url);
+                assertSourceUrlMatchesType(type, url);
+                return { type, url };
+            });
             const unique = Array.from(new Map(normalized.map((source: any) => [source.url, source])).values());
             assert(unique.filter((source: any) => source.type === "website").length === 1, "Debes ingresar exactamente un sitio web oficial.");
             const { data: activeRun } = await bre.from("scrape_runs").select("id").eq("project_id", project.id).in("status", ["queued", "processing"]).maybeSingle();
             assert(!activeRun, "No puedes cambiar fuentes mientras existe un procesamiento activo.", 409);
-            await bre.from("sources").delete().eq("project_id", project.id).eq("source_origin", "user");
+            assertDb(await bre.from("sources").delete().eq("project_id", project.id));
+            assertDb(await bre.from("context_fields").delete().eq("project_id", project.id));
+            assertDb(await bre.from("section_answers").delete().eq("project_id", project.id).eq("section_key", "context_gaps"));
             const { error } = await bre.from("sources").insert(unique.map((source: any) => ({
                 project_id: project.id,
                 source_type: source.type,
@@ -722,7 +801,7 @@ serve(async (req) => {
                 status: "pending",
             })));
             if (error) throw error;
-            await bre.from("projects").update({ status: "sources_ready", current_step: "sources" }).eq("id", project.id);
+            assertDb(await bre.from("projects").update({ status: "sources_ready", current_step: "sources" }).eq("id", project.id));
             return json({ project: await getProjectDto(project.id) });
         }
 
@@ -756,8 +835,8 @@ serve(async (req) => {
                 source_id: source.id,
                 status: "queued",
             })));
-            await bre.from("sources").update({ status: "queued", error_code: null, error_message: null }).in("id", selectedSources.map((source: any) => source.id));
-            await bre.from("projects").update({ status: "scraping", current_step: "processing" }).eq("id", project.id);
+            assertDb(await bre.from("sources").update({ status: "queued", error_code: null, error_message: null }).in("id", selectedSources.map((source: any) => source.id)));
+            assertDb(await bre.from("projects").update({ status: "scraping", current_step: "processing" }).eq("id", project.id));
             const { error: queueError } = await admin.rpc("bre_enqueue_scrape_job", { message: {
                 version: 1,
                 projectId: project.id,
@@ -782,23 +861,39 @@ serve(async (req) => {
             await validateManualAnswer(admin, bre, project.id, fieldKey, body.value, existing.value);
             const sameValue = JSON.stringify(existing.value) === JSON.stringify(body.value);
             const status = actionType === "confirm" && sameValue ? "confirmed" : "corrected";
-            await bre.from("context_fields").update({
+            assertDb(await bre.from("context_fields").update({
                 value: body.value,
                 origin: "user",
                 confidence: "high",
                 status,
                 contradiction: false,
                 updated_by: user.id,
-            }).eq("id", existing.id);
-            await bre.from("section_answers").upsert({
+            }).eq("id", existing.id));
+            assertDb(await bre.from("section_answers").upsert({
                 project_id: project.id,
                 section_key: "context_gaps",
                 field_key: fieldKey,
                 value: body.value,
                 answer_status: "validated",
                 answered_by: user.id,
-            }, { onConflict: "project_id,section_key,field_key" });
-            await bre.from("projects").update({ status: "collecting_answers", current_step: "gaps" }).eq("id", project.id);
+            }, { onConflict: "project_id,section_key,field_key" }));
+            const { data: contextFields, error: contextFieldsError } = await bre.from("context_fields")
+                .select("field_key,origin,confidence,status,contradiction,required_for_base")
+                .eq("project_id", project.id)
+                .in("field_key", Array.from(dynamicFieldKeys));
+            if (contextFieldsError) throw contextFieldsError;
+            const unresolved = (contextFields || []).filter((field: any) => {
+                if (field.contradiction) return true;
+                if (field.origin === "inferred") return !["confirmed", "corrected"].includes(field.status);
+                if (field.status === "not_found") return field.required_for_base !== false;
+                if (field.status === "pending_validation") return true;
+                if (["medium", "low"].includes(field.confidence)) return !["confirmed", "corrected"].includes(field.status);
+                return false;
+            });
+            assertDb(await bre.from("projects").update({
+                status: "collecting_answers",
+                current_step: unresolved.length === 0 ? "internal" : "gaps",
+            }).eq("id", project.id));
             return json({ project: await getProjectDto(project.id) });
         }
 
@@ -811,15 +906,15 @@ serve(async (req) => {
             if (existingError) throw existingError;
             assert(body.value !== undefined && body.value !== null && String(body.value).trim() !== "", "El valor es obligatorio.");
             await validateManualAnswer(admin, bre, project.id, fieldKey, body.value, existing.value);
-            await bre.from("context_fields").update({
+            assertDb(await bre.from("context_fields").update({
                 value: body.value,
                 origin: "user",
                 confidence: "high",
                 status: "corrected",
                 contradiction: false,
                 updated_by: user.id,
-            }).eq("id", existing.id);
-            await bre.from("audit_logs").insert({
+            }).eq("id", existing.id));
+            assertDb(await bre.from("audit_logs").insert({
                 project_id: project.id,
                 actor_id: user.id,
                 actor_type: "user",
@@ -827,7 +922,7 @@ serve(async (req) => {
                 entity_type: "context_field",
                 entity_id: existing.id,
                 payload: { fieldKey },
-            });
+            }));
             return json({ project: await getProjectDto(project.id) });
         }
 
@@ -835,15 +930,16 @@ serve(async (req) => {
             const project = await assertProjectAccess(String(body.projectId || ""));
             assert(project.status !== "base_context_complete", "El contexto base ya fue finalizado.");
             validateInternalData(body.data);
-            await bre.from("section_answers").upsert({
+            await validateManualAnswer(admin, bre, project.id, "internal_data", body.data, null);
+            assertDb(await bre.from("section_answers").upsert({
                 project_id: project.id,
                 section_key: "internal_data",
                 field_key: "payload",
                 value: body.data,
                 answer_status: "validated",
                 answered_by: user.id,
-            }, { onConflict: "project_id,section_key,field_key" });
-            await bre.from("projects").update({ status: "collecting_answers", current_step: "internal" }).eq("id", project.id);
+            }, { onConflict: "project_id,section_key,field_key" }));
+            assertDb(await bre.from("projects").update({ status: "collecting_answers", current_step: "internal" }).eq("id", project.id));
             return json({ project: await getProjectDto(project.id) });
         }
 
@@ -852,6 +948,11 @@ serve(async (req) => {
             if (project.status === "base_context_complete") return json({ project: await getProjectDto(project.id), idempotent: true });
             const { data: website } = await bre.from("sources").select("status").eq("project_id", project.id).eq("source_type", "website").single();
             assert(website?.status === "completed", "El sitio web debe finalizar correctamente.");
+            const { data: userSources, error: userSourcesError } = await bre.from("sources")
+                .select("source_type,status").eq("project_id", project.id).eq("source_origin", "user");
+            if (userSourcesError) throw userSourcesError;
+            const unresolvedSources = (userSources || []).filter((source: any) => !["completed", "partial"].includes(source.status));
+            assert(unresolvedSources.length === 0, "Todas las fuentes proporcionadas deben procesarse o retirarse antes de completar esta etapa.");
             const { data: fields, error: fieldsError } = await bre.from("context_fields").select("*, field_evidence(*)").eq("project_id", project.id);
             if (fieldsError) throw fieldsError;
             const presentDynamicKeys = new Set((fields || []).map((field: any) => field.field_key).filter((key: string) => dynamicFieldKeys.has(key)));
@@ -867,24 +968,24 @@ serve(async (req) => {
             assert(unresolved.length === 0, `Aún existen ${unresolved.length} campos pendientes de validación.`);
             const { data: internalAnswer } = await bre.from("section_answers").select("value").eq("project_id", project.id).eq("section_key", "internal_data").eq("field_key", "payload").single();
             validateInternalData(internalAnswer?.value);
-            const { data: sources } = await bre.from("sources").select("*").eq("project_id", project.id);
             const completedAt = new Date().toISOString();
+            const dto = await getProjectDto(project.id);
             const completionPayload = {
                 eventType: "BaseBusinessContextCompletedV1",
                 version: 1,
                 projectId: project.id,
                 completedAt,
-                context: fields,
+                context: dto.contextFields,
                 internalData: internalAnswer.value,
-                sources,
+                sources: dto.sources,
             };
-            await bre.from("projects").update({
+            assertDb(await bre.from("projects").update({
                 status: "base_context_complete",
-                current_step: "complete",
+                current_step: "objective",
                 completion_payload: completionPayload,
                 completed_at: completedAt,
-            }).eq("id", project.id);
-            await bre.from("audit_logs").insert({
+            }).eq("id", project.id));
+            assertDb(await bre.from("audit_logs").insert({
                 project_id: project.id,
                 actor_id: user.id,
                 actor_type: "user",
@@ -892,7 +993,7 @@ serve(async (req) => {
                 entity_type: "project",
                 entity_id: project.id,
                 payload: { eventType: completionPayload.eventType, version: 1 },
-            });
+            }));
             return json({ project: await getProjectDto(project.id) });
         }
 
