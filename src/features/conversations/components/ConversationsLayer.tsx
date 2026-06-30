@@ -504,7 +504,7 @@ const ConversationsLayer = () => {
     // --- END WORKFLOW STATE & FUNCTIONS ---
 
     const openInChatwoot = (lead: MinifiedConversation) => {
-        const url = getChatwootUrl(lead);
+        const url = getChatwootUrl(lead.id);
         if (!url) {
             toast.info('Este lead no tiene una conversación válida en el Chatwoot actual');
             return;
@@ -519,7 +519,7 @@ const ConversationsLayer = () => {
 
         try {
             let history: ConversationMessage[] = [];
-            const chatwootUrl = getChatwootUrl(lead);
+            const chatwootUrl = getChatwootUrl(lead.id);
             const isLivePreferred = Boolean(chatwootUrl) && lead.source !== 'supabase';
             const fetchApiMessages = async (): Promise<ConversationMessage[]> => {
                 if (!chatwootUrl) return [];
@@ -810,10 +810,10 @@ const ConversationsLayer = () => {
                         <Button
                             className="gap-2"
                             onClick={() => viewingConv && openInChatwoot(viewingConv)}
-                            disabled={Boolean(viewingConv) && !getChatwootUrl(viewingConv)}
+                            disabled={Boolean(viewingConv) && !getChatwootUrl(viewingConv.id)}
                         >
                             <ExternalLink className="h-4 w-4" />
-                            {viewingConv && !getChatwootUrl(viewingConv) ? 'Sin conversación en Chatwoot' : 'Abrir conversación'}
+                            {viewingConv && !getChatwootUrl(viewingConv.id) ? 'Sin conversación en Chatwoot' : 'Abrir conversación'}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

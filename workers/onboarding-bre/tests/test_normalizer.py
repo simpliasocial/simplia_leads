@@ -50,7 +50,9 @@ class NormalizerTests(unittest.TestCase):
         self.assertEqual(faqs["origin"], "inferred")
         self.assertEqual(faqs["status"], "inferred")
         self.assertGreaterEqual(len(faqs["value"]), 3)
-        self.assertIn("¿Qué servicios o productos ofrece la empresa?", faqs["value"])
+        self.assertLessEqual(len(faqs["value"]), 20)
+        self.assertTrue(all("Respuesta:" in item for item in faqs["value"]))
+        self.assertTrue(any(item.startswith("¿Qué servicios o productos ofrece la empresa? Respuesta:") for item in faqs["value"]))
 
 
 if __name__ == "__main__":

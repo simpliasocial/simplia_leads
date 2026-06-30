@@ -12,7 +12,14 @@ export type BreProjectStatus =
     | "scraping"
     | "review_context"
     | "collecting_answers"
-    | "base_context_complete";
+    | "base_context_complete"
+    | "objective_selected"
+    | "locations_configured"
+    | "agenda_configured"
+    | "lead_fields_configured"
+    | "style_configured"
+    | "generating_bot"
+    | "ready_for_technical_review";
 
 export type BreSourceType =
     | "website"
@@ -84,6 +91,9 @@ export interface OnboardingBreSourceV1 {
     origin: "user" | "discovered";
     status: BreSourceStatus;
     pagesProcessed?: number;
+    attemptCount?: number;
+    retryCount?: number;
+    retryLimitReached?: boolean;
     errorCode?: string | null;
     errorMessage?: string | null;
 }
@@ -102,6 +112,9 @@ export interface ScrapeSourceProgressV1 {
     sourceType: BreSourceType;
     status: BreSourceStatus;
     pagesProcessed: number;
+    attemptCount?: number;
+    retryCount?: number;
+    retryLimitReached?: boolean;
     errorCode?: string | null;
     errorMessage?: string | null;
 }
@@ -131,6 +144,138 @@ export interface InternalBusinessDataV1 {
     cac: MoneyMetricV1;
     businessModels: string[];
     otherBusinessModel?: string | null;
+}
+
+export type BreOperationalObjective = "appointments" | "meetings";
+export type BreMeetSetupStatus = "not_applicable" | "pending_technical_setup" | "configured";
+
+export interface OperationalObjectiveConfigV1 {
+    objective: BreOperationalObjective;
+    meetingSetupFeeUsd?: number | null;
+    calendarEmail?: string | null;
+    meetStatus?: BreMeetSetupStatus;
+    locationTerm?: string | null;
+    updatedAt?: string | null;
+}
+
+export interface BreLocationReferenceV1 {
+    id?: string;
+    locationId?: string;
+    referenceType: "alias" | "city" | "sector" | "phrase";
+    value: string;
+    confidence: ContextConfidence;
+}
+
+export interface BreLocationV1 {
+    id?: string;
+    name: string;
+    address: string;
+    hours: string;
+    weeklyHours?: BreWeeklyHourV1[];
+    scheduleNotes?: string | null;
+    googleMapsUrl?: string | null;
+    appointmentTimezone?: string | null;
+    status: "confirmed" | "suggested";
+    references: BreLocationReferenceV1[];
+}
+
+export type BreWeekday =
+    | "monday"
+    | "tuesday"
+    | "wednesday"
+    | "thursday"
+    | "friday"
+    | "saturday"
+    | "sunday";
+
+export interface BreWeeklyHourV1 {
+    day: BreWeekday;
+    enabled: boolean;
+    startTime: string;
+    endTime: string;
+}
+
+export interface BreAgendaConfigV1 {
+    timezone: string;
+    startIntervalMinutes: 15 | 30 | 60;
+    durationMinutes: number;
+    capacityPerSlot: number;
+    weeklyHours: BreWeeklyHourV1[];
+    notes?: string | null;
+}
+
+export type BreLeadFieldKey = "full_name" | "phone" | "email" | "national_id" | "age" | "city" | "custom";
+export type BreLeadFieldCaptureTiming = "conversation_start" | "when_scheduling";
+
+export interface BreLeadCaptureFieldV1 {
+    fieldKey: BreLeadFieldKey;
+    label: string;
+    enabled: boolean;
+    required: boolean;
+    captureTiming?: BreLeadFieldCaptureTiming;
+    blocksEarlyFlow?: boolean;
+    reason?: string | null;
+    customKey?: string | null;
+}
+
+export type BreEmojiMode = "moderate" | "none" | "commercial_only";
+
+export interface BreStylePreferenceV1 {
+    emojiMode: BreEmojiMode;
+}
+
+export type BrePromptBlockKey =
+    | "business_context"
+    | "objective_config"
+    | "locations_block"
+    | "agenda_block"
+    | "lead_fields_block"
+    | "filters_block"
+    | "lopdp_block"
+    | "templates_block"
+    | "variables_block"
+    | "faq_products_block"
+    | "compiled_prompt";
+
+export interface BrePromptBlockV1 {
+    id?: string;
+    blockKey: BrePromptBlockKey;
+    content: string;
+    metadata?: Record<string, unknown>;
+}
+
+export interface BrePromptVersionV1 {
+    id: string;
+    versionNumber: number;
+    status: "candidate" | "published" | "archived";
+    compiledPrompt: string;
+    blocks: BrePromptBlockV1[];
+    createdAt: string;
+}
+
+export interface BreMatcherVersionV1 {
+    id: string;
+    versionNumber: number;
+    status: "candidate" | "published" | "archived";
+    labels: Array<"bienvenida" | "solicita_informacion" | "interesado" | "desinteresado" | "cita_agendada" | "tiene_dudas">;
+    matcherConfig: Record<string, unknown>;
+    matcherCode: string;
+    createdAt: string;
+}
+
+export interface OperationalOnboardingCompletedV1 {
+    eventType: "OperationalOnboardingCompletedV1";
+    version: 1;
+    projectId: string;
+    completedAt: string;
+    reviewStatus: "ready_for_technical_review";
+    objective: OperationalObjectiveConfigV1;
+    agenda: BreAgendaConfigV1;
+    locations: BreLocationV1[];
+    leadCaptureFields: BreLeadCaptureFieldV1[];
+    stylePreference: BreStylePreferenceV1;
+    promptVersionId: string;
+    matcherVersionId: string;
 }
 
 export interface DynamicQuestionV1 {
@@ -173,6 +318,14 @@ export interface OnboardingBreProjectV1 extends OnboardingBreProjectSummaryV1 {
     dynamicQuestions: DynamicQuestionV1[];
     internalData: InternalBusinessDataV1 | null;
     completionEvent: BaseBusinessContextCompletedV1 | null;
+    operationalObjective: OperationalObjectiveConfigV1 | null;
+    locations: BreLocationV1[];
+    agendaConfig: BreAgendaConfigV1 | null;
+    leadCaptureFields: BreLeadCaptureFieldV1[];
+    stylePreference: BreStylePreferenceV1 | null;
+    promptVersion: BrePromptVersionV1 | null;
+    matcherVersion: BreMatcherVersionV1 | null;
+    operationalCompletionEvent: OperationalOnboardingCompletedV1 | null;
 }
 
 export interface BaseBusinessContextCompletedV1 {
@@ -202,3 +355,30 @@ export interface SaveContextAnswerV1 {
     action: "confirm" | "correct";
 }
 
+export interface SaveOperationalObjectiveV1 {
+    projectId: string;
+    objective: BreOperationalObjective;
+    calendarEmail?: string | null;
+    locationTerm?: string | null;
+}
+
+export interface SaveBreLocationsV1 {
+    projectId: string;
+    locationTerm: string;
+    locations: Array<Omit<BreLocationV1, "references"> & { references?: BreLocationReferenceV1[] }>;
+}
+
+export interface SaveBreAgendaConfigV1 {
+    projectId: string;
+    agenda: BreAgendaConfigV1;
+}
+
+export interface SaveBreLeadCaptureFieldsV1 {
+    projectId: string;
+    fields: BreLeadCaptureFieldV1[];
+}
+
+export interface SaveBreStylePreferenceV1 {
+    projectId: string;
+    stylePreference: BreStylePreferenceV1;
+}

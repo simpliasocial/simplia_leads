@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -118,48 +118,103 @@ def _first_document_evidence(document: dict | None) -> list[dict]:
     }]
 
 
-def _has_meaningful_list(value: object, min_items: int = 3) -> bool:
+def _faq_item_text(item: Any) -> str:
+    if isinstance(item, dict):
+        question = str(item.get("question") or item.get("pregunta") or "").strip()
+        answer = str(item.get("answer") or item.get("respuesta") or "").strip()
+        if question and answer:
+            return f"{question} Respuesta: {answer}"
+        return question or answer
+    return str(item or "").strip()
+
+
+def _has_answered_faq_list(value: object, min_items: int = 3) -> bool:
     if isinstance(value, list):
-        return len([item for item in value if str(item).strip()]) >= min_items
+        answered = [_faq_item_text(item) for item in value]
+        return len([item for item in answered if "respuesta:" in item.casefold() and len(item) >= 24]) >= min_items
     if isinstance(value, str):
-        return len([line for line in value.splitlines() if line.strip()]) >= min_items
+        return len([line for line in value.splitlines() if "respuesta:" in line.casefold() and len(line.strip()) >= 24]) >= min_items
     return False
 
 
 def _fallback_faqs(documents: list[dict], fields: list[dict] | None = None) -> list[str]:
-    text = "\n".join(str(item.get("extractedText") or "") for item in documents).lower()
+    text = "\n".join(str(item.get("extractedText") or "") for item in documents)
+    lower_text = text.lower()
     by_key = {field.get("key"): field.get("value") for field in fields or []}
-    questions: list[str] = []
+    faqs: list[str] = []
 
-    def add(question: str) -> None:
-        if question not in questions and len(questions) < 5:
-            questions.append(question)
+    def clean(value: object) -> str:
+        if isinstance(value, list):
+            return ", ".join(str(item).strip() for item in value if str(item).strip())
+        return str(value or "").strip()
+
+    def sentence_from_context(key: str, fallback: str) -> str:
+        value = clean(by_key.get(key))
+        if value:
+            return value[:320]
+        return fallback
+
+    def add(question: str, answer: str) -> None:
+        item = f"{question} Respuesta: {answer.strip()}"
+        if item not in faqs and len(faqs) < 20:
+            faqs.append(item)
 
     services = by_key.get("primary_offers") or by_key.get("services") or by_key.get("products")
-    if services or any(word in text for word in ["servicio", "producto", "solución", "consultoría", "automatización"]):
-        add("¿Qué servicios o productos ofrece la empresa?")
-    add("¿Cómo funciona el proceso de atención o implementación?")
-    if any(word in text for word in ["whatsapp", "contacto", "llamada", "formulario", "agenda"]):
-        add("¿Por qué canal puedo contactar o avanzar con el negocio?")
+    if services or any(word in lower_text for word in ["servicio", "producto", "solución", "consultoría", "automatización", "consultoria", "automatizacion"]):
+        add("¿Qué servicios o productos ofrece la empresa?", sentence_from_context("primary_offers", "La empresa ofrece los servicios o productos descritos en sus canales públicos. Para una recomendación precisa, el cliente puede pedir orientación según su necesidad."))
+    add("¿Cómo funciona el proceso de atención o implementación?", "El proceso debe explicarse de forma simple: entender la necesidad del cliente, confirmar la información relevante y guiarlo al siguiente paso comercial definido por el negocio.")
+    if any(word in lower_text for word in ["whatsapp", "contacto", "llamada", "formulario", "agenda"]):
+        add("¿Por qué canal puedo contactar o avanzar con el negocio?", "El cliente puede avanzar por los canales públicos detectados, como WhatsApp, formulario, llamada, agenda o redes sociales, según lo que el negocio tenga publicado.")
     else:
-        add("¿Cómo puedo contactar al negocio?")
-    if any(word in text for word in ["precio", "costo", "cotiza", "plan", "paquete", "$", "usd"]):
-        add("¿Cuál es el costo o cómo se cotiza el servicio?")
-    if any(word in text for word in ["horario", "lunes", "martes", "sábado", "domingo"]):
-        add("¿Cuáles son los horarios de atención?")
-    if any(word in text for word in ["quito", "guayaquil", "ecuador", "colombia", "méxico", "ubicación", "sede"]):
-        add("¿Dónde atienden o en qué zonas trabajan?")
-    add("¿Qué beneficios obtiene el cliente al contratar este negocio?")
-    add("¿Qué información necesita el cliente antes de avanzar?")
+        add("¿Cómo puedo contactar al negocio?", "El bot debe ofrecer el canal de contacto publicado por el negocio o, si no hay uno claro, indicar que puede dejar sus datos para recibir orientación.")
+    if any(word in lower_text for word in ["precio", "costo", "cotiza", "plan", "paquete", "$", "usd"]):
+        add("¿Cuál es el costo o cómo se cotiza el servicio?", "El costo depende de la información comercial publicada y del caso del cliente. Si no hay precio confirmado, el bot debe evitar inventar valores y guiar a una cotización o asesoría.")
+    if any(word in lower_text for word in ["horario", "lunes", "martes", "sábado", "domingo"]):
+        add("¿Cuáles son los horarios de atención?", "Los horarios visibles se deben usar solo como contexto público. La agenda real se confirma en el bloque operativo correspondiente.")
+    if any(word in lower_text for word in ["quito", "guayaquil", "ecuador", "colombia", "méxico", "ubicación", "sede"]):
+        add("¿Dónde atienden o en qué zonas trabajan?", "La cobertura o ubicación debe responderse con la información pública detectada, sin confirmar sedes finales hasta el bloque operativo de citas.")
+    add("¿Qué beneficios obtiene el cliente al contratar este negocio?", sentence_from_context("benefits", "El cliente recibe los beneficios comunicados públicamente por el negocio, como atención, asesoría, rapidez, confianza o mejores resultados según aplique."))
+    add("¿Qué información necesita el cliente antes de avanzar?", "El cliente suele necesitar entender la oferta, requisitos, condiciones generales, canales de contacto y el siguiente paso para recibir atención o agendar.")
 
-    return questions[:5]
+    return faqs[:20]
+
+
+def _normalize_faqs(value: object, documents: list[dict], fields: list[dict] | None = None) -> list[str]:
+    fallback = _fallback_faqs(documents, fields)
+    fallback_answers = {
+        item.split(" Respuesta:", 1)[0].strip(): item.split(" Respuesta:", 1)[1].strip()
+        for item in fallback
+        if " Respuesta:" in item
+    }
+    raw_items = value if isinstance(value, list) else str(value or "").splitlines()
+    normalized: list[str] = []
+    for raw in raw_items:
+        text = _faq_item_text(raw)
+        if not text:
+            continue
+        if "respuesta:" in text.casefold():
+            question, answer = re.split(r"respuesta\s*:", text, maxsplit=1, flags=re.IGNORECASE)
+            question = question.strip()
+            answer = answer.strip()
+        else:
+            question = text.strip()
+            answer = fallback_answers.get(question) or "Respuesta sugerida desde el contexto público: orientar al cliente con la información detectada y llevarlo al siguiente paso comercial sin inventar datos no confirmados."
+        item = f"{question} Respuesta: {answer}"
+        if item not in normalized:
+            normalized.append(item)
+        if len(normalized) >= 20:
+            break
+    return normalized if _has_answered_faq_list(normalized) else fallback
 
 
 def _ensure_candidate_faqs(fields: list[dict], documents: list[dict]) -> None:
     faq_field = next((field for field in fields if field.get("key") == "faqs"), None)
-    if not faq_field or _has_meaningful_list(faq_field.get("value")):
+    if not faq_field:
         return
-    generated = _fallback_faqs(documents, fields)
+    if _has_answered_faq_list(faq_field.get("value")):
+        faq_field["value"] = _normalize_faqs(faq_field.get("value"), documents, fields)
+        return
+    generated = _normalize_faqs(faq_field.get("value"), documents, fields)
     if not generated:
         return
     first = next((item for item in documents if item.get("extractedText")), None)
@@ -187,6 +242,10 @@ You normalize public business information for a base-context onboarding.
 Return only fields with useful public evidence or a justified inference, plus all eleven dynamic
 fields even when they are not found. Valid keys and categories are supplied below.
 Represent complex or repeated information as a concise list of strings; do not return nested objects.
+For faqs, every item must include both the question and the answer in this exact style:
+¿Pregunta frecuente? Respuesta: respuesta breve basada on public context. Never return only questions.
+For faqs, extract as many useful items as the evidence allows, with a hard maximum of 20.
+You must try to produce at least 3 useful FAQs whenever public context allows it.
 Every factual extracted value must cite one or more provided DOC ids and include a short exact quote
 copied from that document. Never invent or paraphrase evidence quotes.
 Use origin=inferred for hypotheses, including ICP and any classification not literally stated.

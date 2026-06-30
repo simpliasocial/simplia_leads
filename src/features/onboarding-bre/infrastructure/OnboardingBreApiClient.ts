@@ -5,8 +5,13 @@ import type {
     InternalBusinessDataV1,
     OnboardingBreProjectSummaryV1,
     OnboardingBreProjectV1,
+    SaveBreAgendaConfigV1,
+    SaveBreLeadCaptureFieldsV1,
+    SaveBreLocationsV1,
+    SaveBreStylePreferenceV1,
     SaveBreSourcesV1,
     SaveContextAnswerV1,
+    SaveOperationalObjectiveV1,
 } from "../domain/types";
 import { buildDynamicQuestions } from "../model/onboardingBreModel";
 import { invokeAuthenticatedFunction } from "@/infrastructure/supabase/EdgeFunctionClient";
@@ -90,6 +95,71 @@ export class OnboardingBreApiClient {
         const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
             action: "finalize_base_context",
             projectId,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async saveOperationalObjective(input: SaveOperationalObjectiveV1) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "save_operational_objective",
+            ...input,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async saveLocations(input: SaveBreLocationsV1) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "save_locations",
+            ...input,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async saveAgendaConfig(input: SaveBreAgendaConfigV1) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "save_agenda_config",
+            ...input,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async saveLeadCaptureFields(input: SaveBreLeadCaptureFieldsV1) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "save_lead_capture_fields",
+            ...input,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async saveStylePreference(input: SaveBreStylePreferenceV1) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "save_style_preference",
+            ...input,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async generateBotVersion(projectId: string, input?: { legalTextOverride?: string }) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "generate_bot_version",
+            projectId,
+            legalTextOverride: input?.legalTextOverride,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async savePromptCandidate(input: { projectId: string; promptVersionId: string; compiledPrompt: string }) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "save_prompt_candidate",
+            ...input,
+        });
+        return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
+    }
+
+    async saveMatcherCandidate(input: { projectId: string; matcherVersionId: string; matcherCode: string }) {
+        const { project } = await this.invoke<{ project: OnboardingBreProjectV1 }>({
+            action: "save_matcher_candidate",
+            ...input,
         });
         return { ...project, dynamicQuestions: buildDynamicQuestions(project.contextFields) };
     }

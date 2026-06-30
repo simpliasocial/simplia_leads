@@ -11,7 +11,7 @@ import httpx
 
 from .normalizer import normalize_context
 from .security import UnsafeUrlError, normalize_public_url
-from .social import PartialExtractionError, PlatformBlockedError, fetch_public_html, scrape_social
+from .social import PartialExtractionError, PlatformBlockedError, fetch_public_html, fetch_public_markdown_proxy, scrape_social
 
 
 @dataclass
@@ -72,16 +72,23 @@ def crawl_website(source: dict, limits: dict) -> tuple[list[dict], list[dict]]:
         timeout=900,
         check=False,
     )
-    if process.returncode != 0:
-        raise RuntimeError(process.stderr.strip()[-2000:] or "Website crawler failed")
+    crawler_error = process.stderr.strip()[-2000:] if process.returncode != 0 else ""
+    result = None
     lines = [line for line in process.stdout.splitlines() if line.strip()]
-    if not lines:
-        raise RuntimeError("Website crawler returned no result")
-    result = json.loads(lines[-1])
-    documents = result.get("documents") or []
-    if not documents:
-        documents = [fetch_public_html(payload["url"], use_browser_fallback=True)]
-    return documents, result.get("discoveredSources") or []
+    if lines:
+        result = json.loads(lines[-1])
+        documents = result.get("documents") or []
+        if documents:
+            return documents, result.get("discoveredSources") or []
+    try:
+        return [fetch_public_html(payload["url"], use_browser_fallback=True)], result.get("discoveredSources") if result else []
+    except Exception:
+        try:
+            return [fetch_public_markdown_proxy(payload["url"])], result.get("discoveredSources") if result else []
+        except Exception as proxy_exc:
+            if crawler_error:
+                raise RuntimeError(crawler_error) from proxy_exc
+            raise
 
 
 def process_job(api: BreApi, queue_job: dict) -> None:

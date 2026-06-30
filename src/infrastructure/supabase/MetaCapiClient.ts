@@ -29,11 +29,21 @@ export type MetaCapiConfigInput = Omit<
 
 export type MetaCapiEventKind = "appointment" | "sale" | "test";
 
+export type MetaCapiLeadPayload = {
+    id?: string | number;
+    fullName?: string;
+    email?: string;
+    phone?: string;
+    conversationId?: string;
+    meetingId?: string;
+};
+
 export type MetaCapiEventInput = {
     accountId?: number;
     eventKind: MetaCapiEventKind;
-    conversationId: string;
+    conversationId?: string;
     meetingId?: string;
+    lead?: MetaCapiLeadPayload;
     eventName?: string;
     eventId?: string;
     name?: string;
@@ -56,6 +66,8 @@ export type MetaCapiEventInput = {
 export type MetaCapiActionResponse = {
     ok: boolean;
     status?: "success" | "error" | "skipped";
+    skipped?: boolean;
+    reason?: string;
     config?: MetaCapiConfig;
     configured?: boolean;
     auditId?: string;
@@ -67,7 +79,29 @@ export type MetaCapiActionResponse = {
 };
 
 const invokeMetaCapi = async (body: Record<string, unknown>): Promise<MetaCapiActionResponse> => {
-    return invokeAuthenticatedFunction<MetaCapiActionResponse>("meta-capi", body);
+    const payload = await invokeAuthenticatedFunction<MetaCapiActionResponse>("meta-capi", body);
+    if (payload.status === "skipped") {
+        return {
+            ...payload,
+            skipped: true,
+            reason: payload.reason || payload.message || payload.error || "Evento omitido por Meta CAPI.",
+        };
+    }
+    return payload;
+};
+
+const normalizeMetaCapiEvent = (event: MetaCapiEventInput): MetaCapiEventInput => {
+    const { lead, ...rest } = event;
+    if (!lead) return rest;
+
+    return {
+        ...rest,
+        conversationId: rest.conversationId || lead.conversationId || String(lead.id || ""),
+        meetingId: rest.meetingId || lead.meetingId,
+        name: rest.name || lead.fullName,
+        email: rest.email || lead.email,
+        phone: rest.phone || lead.phone,
+    };
 };
 
 export const metaCapiClient = {
@@ -113,7 +147,7 @@ export const metaCapiClient = {
     async sendEvent(event: MetaCapiEventInput) {
         return invokeMetaCapi({
             action: "send_event",
-            event,
+            event: normalizeMetaCapiEvent(event),
         });
     },
 };

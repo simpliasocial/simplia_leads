@@ -177,6 +177,25 @@ def fetch_public_html(url: str, use_browser_fallback: bool = True) -> dict:
     return _document(final_url, text, raw, metadata=metadata, title=title)
 
 
+def fetch_public_markdown_proxy(url: str) -> dict:
+    normalized = normalize_public_url(url)
+    proxy_url = f"https://r.jina.ai/http://{urlsplit(normalized).netloc}{urlsplit(normalized).path or '/'}"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; SimpliaBRE/1.0; +public-onboarding)"}
+    response = httpx.get(proxy_url, headers=headers, timeout=30)
+    response.raise_for_status()
+    raw = response.text
+    text = raw.strip()
+    if len(text) < 80:
+        raise PlatformBlockedError("No se pudo rescatar contenido público legible desde el sitio web")
+    title_match = re.search(r"^Title:\s*(.+)$", raw, re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else urlsplit(normalized).netloc
+    metadata = {
+        "fallbackReader": "r.jina.ai",
+        "sourceUrl": normalized,
+    }
+    return _document(normalized, text, raw, metadata=metadata, title=title)
+
+
 def scrape_instagram(url: str) -> list[dict]:
     username_match = re.search(r"instagram\.com/([^/?#]+)", url)
     if not username_match:

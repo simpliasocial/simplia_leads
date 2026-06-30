@@ -1,6 +1,13 @@
 import {
     DYNAMIC_CONTEXT_FIELD_KEYS,
     type ContextFieldV1,
+    type BreAgendaConfigV1,
+    type BreLeadCaptureFieldV1,
+    type BreLocationV1,
+    type BreOperationalObjective,
+    type BreStylePreferenceV1,
+    type BreWeeklyHourV1,
+    type BreWeekday,
     type DynamicContextFieldKey,
     type DynamicQuestionV1,
     type InfoSealV1,
@@ -24,6 +31,88 @@ export const BUSINESS_MODEL_OPTIONS = [
     "Franquicia",
     "Otro",
 ] as const;
+
+export const OBJECTIVE_OPTIONS: Array<{
+    value: BreOperationalObjective;
+    label: string;
+    description: string;
+}> = [
+    {
+        value: "appointments",
+        label: "Agendamiento de citas",
+        description: "Para leads que deben asistir a una sede, agencia, oficina o punto de atención.",
+    },
+    {
+        value: "meetings",
+        label: "Agendamiento de reuniones",
+        description: "Para reuniones comerciales, usualmente virtuales, con calendario y Google Meet.",
+    },
+];
+
+export const LOCATION_TERM_OPTIONS = ["sedes", "agencias", "sucursales", "locales", "oficinas", "puntos de atención", "otro"] as const;
+
+const normalizeText = (value: string) => value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+export const WEEKDAY_LABELS: Record<string, string> = {
+    monday: "Lunes",
+    tuesday: "Martes",
+    wednesday: "Miércoles",
+    thursday: "Jueves",
+    friday: "Viernes",
+    saturday: "Sábado",
+    sunday: "Domingo",
+};
+
+export const DEFAULT_WEEKLY_HOURS = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+].map((day) => ({
+    day: day as BreWeekday,
+    enabled: !["saturday", "sunday"].includes(day),
+    startTime: "09:00",
+    endTime: "17:00",
+}));
+
+export const DEFAULT_LEAD_FIELDS: BreLeadCaptureFieldV1[] = [
+    { fieldKey: "full_name", label: "Nombre completo", enabled: true, required: false, captureTiming: "when_scheduling", blocksEarlyFlow: false, reason: "Identificar al lead en confirmación, consulta y agenda." },
+    { fieldKey: "phone", label: "Número Celular", enabled: true, required: false, captureTiming: "when_scheduling", blocksEarlyFlow: false, reason: "Necesario si el lead no viene de WhatsApp o si el negocio requiere seguimiento." },
+    { fieldKey: "email", label: "Correo Electrónico", enabled: true, required: false, captureTiming: "when_scheduling", blocksEarlyFlow: false, reason: "Especialmente relevante para reuniones e invitaciones." },
+    { fieldKey: "national_id", label: "Identificación", enabled: false, required: false, captureTiming: "when_scheduling", blocksEarlyFlow: false, reason: "Solo si el negocio lo necesita por operación o validación." },
+    { fieldKey: "age", label: "Edad", enabled: false, required: false, captureTiming: "when_scheduling", blocksEarlyFlow: false, reason: "Solo si existe requisito de edad o segmentación." },
+    { fieldKey: "city", label: "Ciudad", enabled: true, required: false, captureTiming: "when_scheduling", blocksEarlyFlow: false, reason: "Útil para citas, sedes, cobertura y filtros." },
+];
+
+export const EMOJI_MODE_OPTIONS = [
+    { value: "moderate", label: "Usar emojis de forma moderada", description: "Cada plantilla tendrá al menos 1 emoji; el AI Brain decide si agrega más sin saturar." },
+    { value: "none", label: "No usar emojis", description: "Todas las plantillas se generan con tono textual limpio y profesional." },
+    { value: "commercial_only", label: "Solo en bienvenida o mensajes comerciales", description: "Se limita el uso de emojis a puntos de alto impacto." },
+] as const;
+
+export const normalizeLeadCaptureFieldLabel = (field: BreLeadCaptureFieldV1): BreLeadCaptureFieldV1 => ({
+    ...field,
+    captureTiming: field.enabled && field.captureTiming === "conversation_start" ? "conversation_start" : "when_scheduling",
+    blocksEarlyFlow: Boolean(field.enabled && field.required && field.captureTiming === "conversation_start" && field.blocksEarlyFlow),
+    label: field.fieldKey === "full_name"
+        ? "Nombre completo"
+        : field.fieldKey === "phone"
+            ? "Número Celular"
+            : field.fieldKey === "email"
+                ? "Correo Electrónico"
+                : field.fieldKey === "national_id"
+                    ? "Identificación"
+                    : field.label,
+});
+
+export const normalizeLeadCaptureFieldsForUi = (fields: BreLeadCaptureFieldV1[]): BreLeadCaptureFieldV1[] =>
+    fields.map(normalizeLeadCaptureFieldLabel);
 
 const FIELD_LABELS: Record<DynamicContextFieldKey, string> = {
     commercial_name: "Nombre comercial",
@@ -223,7 +312,7 @@ const FIELD_INFO: Record<DynamicContextFieldKey, InfoSealV1> = {
         definition: "Dudas comunes que aparecen antes de comprar, consultar o agendar.",
         examples: ["¿Cuánto cuesta?", "¿Qué requisitos necesito?"],
         reason: "Da una primera base de respuestas sin reemplazar la gestión futura de FAQs.",
-        expectedFormat: "Entre 3 y 5 preguntas con su respuesta cuando sea posible.",
+        expectedFormat: "Entre 3 y 20 preguntas con su respuesta. El sistema debe intentar extraer tantas como sean útiles desde el contexto público.",
     },
 };
 
@@ -251,6 +340,45 @@ export const INTERNAL_INFO_SEALS = {
         examples: ["Suscripción", "Servicios por proyecto", "Venta recurrente"],
         reason: "Define cómo debe entenderse la conversión y la relación comercial.",
         expectedFormat: "Selecciona una o varias opciones; describe 'Otro' cuando aplique.",
+    },
+} satisfies Record<string, InfoSealV1>;
+
+export const OPERATIONAL_INFO_SEALS = {
+    objective: {
+        definition: "Define si el bot debe llevar al lead a una cita presencial o a una reunión comercial.",
+        examples: ["Citas para visitar una sede", "Reuniones para una demo virtual"],
+        reason: "Esta decisión bifurca el wizard y evita pedir información irrelevante.",
+        expectedFormat: "Selecciona una sola opción.",
+    },
+    locations: {
+        definition: "Sedes reales donde el negocio atiende citas presenciales.",
+        examples: ["Sede Norte, Av. Principal 123, lunes a viernes 09:00-17:00"],
+        reason: "El bot necesita sedes confirmadas para orientar al lead y evitar ubicaciones inventadas.",
+        expectedFormat: "Nombre, ubicación y horario por cada sede. Google Maps es opcional.",
+    },
+    calendarEmail: {
+        definition: "Correo con el que el equipo técnico configurará calendario y Google Meet.",
+        examples: ["ventas@empresa.com", "agenda@empresa.com"],
+        reason: "Las reuniones requieren permisos técnicos antes de automatizar calendario y Meet.",
+        expectedFormat: "Un correo válido. Quedará pendiente de configuración técnica.",
+    },
+    agenda: {
+        definition: "Reglas operativas de agendamiento: intervalo de inicio, cupos y notas comunes. En reuniones también define la zona horaria del negocio.",
+        examples: ["Intervalos de 30 minutos, duración 60 minutos, 2 cupos por bloque"],
+        reason: "Evita sobreagendar y permite construir plantillas de disponibilidad sin duplicar horarios por sede.",
+        expectedFormat: "Intervalo 15/30/60 y cupos válidos. En reuniones, zona horaria IANA; en citas, horario y zona horaria se definen por sede.",
+    },
+    leadFields: {
+        definition: "Datos que el bot debe pedir al lead antes de agendar.",
+        examples: ["Nombre obligatorio", "Correo obligatorio", "Teléfono obligatorio solo si aplica"],
+        reason: "La plantilla de confirmación debe incluir todas las variables capturadas.",
+        expectedFormat: "Activa cada campo y marca si es obligatorio u opcional.",
+    },
+    stylePreference: {
+        definition: "Preferencia de uso de emojis en las plantillas generadas.",
+        examples: ["Sin emojis", "Moderado", "Solo en bienvenida"],
+        reason: "Afecta la redacción, no la estructura del negocio.",
+        expectedFormat: "Selecciona una sola preferencia.",
     },
 } satisfies Record<string, InfoSealV1>;
 
@@ -337,5 +465,494 @@ export const areProvidedSourcesReady = (sources: OnboardingBreSourceV1[]) => {
     const provided = sources.filter((source) => source.origin === "user");
     const website = provided.find((source) => source.type === "website");
     return website?.status === "completed"
-        && provided.every((source) => source.status === "completed" || source.status === "partial");
+        && provided.every((source) =>
+            source.status === "completed"
+            || source.status === "partial"
+            || (source.retryLimitReached && source.type !== "website")
+        );
+};
+
+const isTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+
+export const emptyAgendaConfig = (): BreAgendaConfigV1 => ({
+    timezone: "America/Guayaquil",
+    startIntervalMinutes: 30,
+    durationMinutes: 30,
+    capacityPerSlot: 1,
+    weeklyHours: DEFAULT_WEEKLY_HOURS,
+    notes: "",
+});
+
+export const emptyLocation = (): BreLocationV1 => ({
+    name: "",
+    address: "",
+    hours: "",
+    weeklyHours: DEFAULT_WEEKLY_HOURS.map((item) => ({ ...item })),
+    scheduleNotes: "",
+    googleMapsUrl: "",
+    appointmentTimezone: "",
+    status: "confirmed",
+    references: [],
+});
+
+const LOCATION_NAME_SOURCE_KEYS = ["possible_agencies", "possible_branches"] as const;
+const LOCATION_ADDRESS_SOURCE_KEYS = ["visible_addresses"] as const;
+const LOCATION_HOURS_SOURCE_KEYS = ["hours_by_location", "special_hours", "location_hours"] as const;
+const LOCATION_REFERENCE_SOURCE_KEYS = ["location_references", "visible_cities", "visible_sectors", "possible_locations"] as const;
+const LOCATION_MAPS_SOURCE_KEYS = ["google_maps_links"] as const;
+
+const toStringLines = (value: unknown): string[] => {
+    if (value === null || value === undefined) return [];
+    if (typeof value === "string") {
+        return value
+            .split(/\r?\n/)
+            .map((item) => item.trim())
+            .filter(Boolean);
+    }
+    if (Array.isArray(value)) {
+        return value.flatMap((item) => toStringLines(item));
+    }
+    if (typeof value === "object") {
+        return Object.values(value as Record<string, unknown>).flatMap((item) => toStringLines(item));
+    }
+    return [String(value).trim()].filter(Boolean);
+};
+
+export const isValidIanaTimezone = (value: string | null | undefined) => {
+    const timezone = String(value || "").trim();
+    if (!timezone) return false;
+    try {
+        Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+const TIMEZONE_CONTEXT_HINTS: Array<{ timezone: string; terms: string[] }> = [
+    { timezone: "America/Guayaquil", terms: ["ecuador", "quito", "guayaquil", "cuenca", "guayaquil ecuador"] },
+    { timezone: "Europe/Madrid", terms: ["espana", "españa", "madrid", "barcelona", "valencia", "sevilla"] },
+    { timezone: "Europe/London", terms: ["reino unido", "londres", "london", "united kingdom", "uk"] },
+    { timezone: "America/New_York", terms: ["new york", "nueva york", "miami", "florida", "washington", "estados unidos", "usa"] },
+    { timezone: "America/Mexico_City", terms: ["mexico", "méxico", "ciudad de mexico", "ciudad de méxico", "cdmx"] },
+    { timezone: "America/Bogota", terms: ["colombia", "bogota", "bogotá", "medellin", "medellín"] },
+    { timezone: "America/Lima", terms: ["peru", "perú", "lima"] },
+    { timezone: "America/Santiago", terms: ["chile", "santiago de chile", "santiago"] },
+    { timezone: "America/Argentina/Buenos_Aires", terms: ["argentina", "buenos aires"] },
+    { timezone: "America/Panama", terms: ["panama", "panamá"] },
+    { timezone: "America/Costa_Rica", terms: ["costa rica", "san jose costa rica", "san josé costa rica"] },
+    { timezone: "America/Santo_Domingo", terms: ["republica dominicana", "república dominicana", "santo domingo"] },
+];
+
+export const inferIanaTimezoneFromContext = (
+    fields: ContextFieldV1[] = [],
+    fallback = "America/Guayaquil",
+) => {
+    const explicitTimezone = fields
+        .flatMap((field) => toStringLines(field.value))
+        .map((line) => line.trim())
+        .find((line) => isValidIanaTimezone(line));
+    if (explicitTimezone) return explicitTimezone;
+
+    const haystack = normalizeText(
+        fields
+            .flatMap((field) => [field.key, ...toStringLines(field.value)])
+            .join(" "),
+    );
+    const match = TIMEZONE_CONTEXT_HINTS.find((hint) =>
+        hint.terms.some((term) => haystack.includes(normalizeText(term))),
+    );
+    return match?.timezone || fallback;
+};
+
+const canonicalLocationName = (value: string) => normalizeText(value)
+    .replace(/\b(agencia|agencias|sede|sedes|sucursal|sucursales|oficina|oficinas|local|locales)\b/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const cloneWeeklyHours = (enabledByDefault = false): BreWeeklyHourV1[] => DEFAULT_WEEKLY_HOURS.map((item) => ({
+    ...item,
+    enabled: enabledByDefault ? item.enabled : false,
+}));
+
+const TIME_TOKEN_REGEX = /(\d{1,2})(?:[:hH]?(\d{2}))?\s*(am|pm)?/gi;
+
+const parseTimeToken = (value: string) => {
+    const match = value.trim().match(/^(\d{1,2})(?:[:hH]?(\d{2}))?\s*(am|pm)?$/i);
+    if (!match) return null;
+    let hour = Number(match[1]);
+    const minutes = match[2] || "00";
+    const suffix = match[3]?.toLowerCase();
+    if (Number.isNaN(hour) || hour > 24) return null;
+    if (suffix === "am") {
+        if (hour === 12) hour = 0;
+    } else if (suffix === "pm") {
+        if (hour < 12) hour += 12;
+    }
+    if (hour === 24) hour = 0;
+    return `${String(hour).padStart(2, "0")}:${minutes.padStart(2, "0")}`;
+};
+
+const DAY_ALIASES: Array<{ day: BreWeekday; aliases: string[] }> = [
+    { day: "monday", aliases: ["lunes"] },
+    { day: "tuesday", aliases: ["martes"] },
+    { day: "wednesday", aliases: ["miercoles", "miércoles"] },
+    { day: "thursday", aliases: ["jueves"] },
+    { day: "friday", aliases: ["viernes"] },
+    { day: "saturday", aliases: ["sabado", "sábado", "sabados", "sábados"] },
+    { day: "sunday", aliases: ["domingo", "domingos"] },
+];
+
+const ORDERED_WEEKDAYS: BreWeekday[] = DAY_ALIASES.map((item) => item.day);
+
+const dayFromAlias = (value: string) => DAY_ALIASES.find((item) => item.aliases.some((alias) => value.includes(normalizeText(alias))))?.day || null;
+
+const extractDaysFromClause = (value: string): BreWeekday[] => {
+    const normalized = normalizeText(value);
+    const rangeMatch = normalized.match(/(lunes|martes|miercoles|jueves|viernes|sabado|domingo)s?\s+a\s+(lunes|martes|miercoles|jueves|viernes|sabado|domingo)s?/);
+    if (rangeMatch) {
+        const start = dayFromAlias(rangeMatch[1]);
+        const end = dayFromAlias(rangeMatch[2]);
+        if (start && end) {
+            const startIndex = ORDERED_WEEKDAYS.indexOf(start);
+            const endIndex = ORDERED_WEEKDAYS.indexOf(end);
+            if (startIndex >= 0 && endIndex >= startIndex) {
+                return ORDERED_WEEKDAYS.slice(startIndex, endIndex + 1);
+            }
+        }
+    }
+    const found = ORDERED_WEEKDAYS.filter((day) => DAY_ALIASES.find((item) => item.day === day)?.aliases.some((alias) => normalized.includes(normalizeText(alias))));
+    return Array.from(new Set(found));
+};
+
+const parseWeeklyHoursFromText = (value: string) => {
+    const weeklyHours = cloneWeeklyHours();
+    const notes: string[] = [];
+    const source = value.trim();
+    if (!source) return { weeklyHours, scheduleNotes: "" };
+    const clauses = source
+        .split(/\r?\n|;/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+    clauses.forEach((clause) => {
+        const dayMatches = extractDaysFromClause(clause);
+        const timeMatches = Array.from(clause.matchAll(TIME_TOKEN_REGEX))
+            .map((match) => parseTimeToken(match[0]))
+            .filter((item): item is string => Boolean(item));
+
+        if (dayMatches.length && timeMatches.length >= 2) {
+            dayMatches.forEach((day) => {
+                const index = weeklyHours.findIndex((item) => item.day === day);
+                if (index >= 0) {
+                    weeklyHours[index] = {
+                        day,
+                        enabled: true,
+                        startTime: timeMatches[0],
+                        endTime: timeMatches[1],
+                    };
+                }
+            });
+            return;
+        }
+
+        notes.push(clause);
+    });
+
+    const enabledCount = weeklyHours.filter((item) => item.enabled).length;
+    return {
+        weeklyHours,
+        scheduleNotes: notes.join("\n") || (enabledCount === 0 ? source : ""),
+    };
+};
+
+const findContextField = (fields: ContextFieldV1[], key: string) => fields.find((field) => field.key === key);
+
+const collectContextLines = (fields: ContextFieldV1[], keys: readonly string[]) =>
+    keys.flatMap((key) => fields
+        .filter((field) => field.key === key)
+        .flatMap((field) => toStringLines(field.value)));
+
+const matchLocationName = (text: string, names: string[]) => {
+    const normalizedText = canonicalLocationName(text);
+    return [...names]
+        .sort((left, right) => canonicalLocationName(right).length - canonicalLocationName(left).length)
+        .find((name) => {
+            const normalizedName = canonicalLocationName(name);
+            return normalizedName && (normalizedText.includes(normalizedName) || normalizedName.includes(normalizedText));
+        }) || null;
+};
+
+const cleanLocationLabel = (value: string) => value
+    .replace(/^\s*(agencia|sede|sucursal|oficina|local)\s+/i, "")
+    .trim();
+
+const URL_REGEX = /https?:\/\/[^\s),]+/i;
+
+const cleanGoogleMapsUrl = (value: string) => value
+    .trim()
+    .replace(/[)\].,;]+$/g, "");
+
+const isGoogleMapsUrl = (value: string) =>
+    /(?:maps\.app\.goo\.gl|google\.[^/\s]+\/maps|goo\.gl\/maps)/i.test(value);
+
+const decodeGoogleMapsText = (value: string) => {
+    try {
+        return decodeURIComponent(value.replace(/\+/g, " "));
+    } catch {
+        return value.replace(/\+/g, " ");
+    }
+};
+
+const extractGoogleMapsPlaceName = (url: string) => {
+    const decoded = decodeGoogleMapsText(url);
+    const placeMatch = decoded.match(/\/(?:maps\/)?place\/([^/@?]+)/i);
+    if (placeMatch?.[1]) {
+        return cleanLocationLabel(placeMatch[1].replace(/[+/]+/g, " ")).trim();
+    }
+
+    const queryMatch = decoded.match(/[?&](?:q|query)=([^&]+)/i);
+    if (queryMatch?.[1]) {
+        return cleanLocationLabel(queryMatch[1].replace(/[+/]+/g, " ")).trim();
+    }
+
+    return "";
+};
+
+const looksLikeHoursText = (value: string) => {
+    const normalized = normalizeText(value);
+    return /(lunes|martes|miercoles|jueves|viernes|sabado|domingo|horario|atencion|atiende)/.test(normalized)
+        && /\d/.test(normalized);
+};
+
+const looksLikeAddressText = (value: string) => {
+    const normalized = normalizeText(value);
+    return /\b(av|avenida|calle|edificio|centro comercial|plaza|local|piso|sector|quito|guayaquil|cuenca|santo domingo|direccion|dirección)\b/.test(normalized);
+};
+
+const splitMapLineParts = (value: string, url: string) => value
+    .replace(url, "")
+    .split(/\s+[|•]\s+|\s+-\s+|\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+type GoogleMapsCandidate = {
+    name: string;
+    address?: string;
+    googleMapsUrl: string;
+    hoursText?: string;
+    rawText: string;
+};
+
+const buildGoogleMapsCandidate = (line: string, fallbackIndex: number): GoogleMapsCandidate | null => {
+    const urlMatch = line.match(URL_REGEX);
+    if (!urlMatch) return null;
+
+    const googleMapsUrl = cleanGoogleMapsUrl(urlMatch[0]);
+    if (!isGoogleMapsUrl(googleMapsUrl)) return null;
+
+    const parts = splitMapLineParts(line, googleMapsUrl);
+    const nameFromUrl = extractGoogleMapsPlaceName(googleMapsUrl);
+    const nameFromText = parts.find((part) => !looksLikeHoursText(part) && !looksLikeAddressText(part));
+    const address = parts.find(looksLikeAddressText);
+    const hoursText = parts.filter(looksLikeHoursText).join("\n");
+
+    return {
+        name: cleanLocationLabel(nameFromText || nameFromUrl || `Ubicación sugerida ${fallbackIndex + 1}`),
+        address,
+        googleMapsUrl,
+        hoursText,
+        rawText: line.trim(),
+    };
+};
+
+type SuggestedLocationDraft = {
+    name: string;
+    address?: string;
+    googleMapsUrl?: string;
+    hoursText?: string;
+    references: Set<string>;
+};
+
+export const hydrateLocationForEditor = (location: BreLocationV1): BreLocationV1 => {
+    const parsedSchedule = parseWeeklyHoursFromText(location.hours || location.scheduleNotes || "");
+    return {
+        ...location,
+        weeklyHours: location.weeklyHours?.length ? location.weeklyHours : parsedSchedule.weeklyHours,
+        scheduleNotes: location.scheduleNotes || parsedSchedule.scheduleNotes,
+    };
+};
+
+export const buildSuggestedLocationsFromContext = (fields: ContextFieldV1[]): BreLocationV1[] => {
+    const maps = collectContextLines(fields, LOCATION_MAPS_SOURCE_KEYS);
+    const mapCandidates = maps
+        .map((line, index) => buildGoogleMapsCandidate(line, index))
+        .filter((candidate): candidate is GoogleMapsCandidate => Boolean(candidate));
+
+    const nameLines = [
+        ...collectContextLines(fields, LOCATION_NAME_SOURCE_KEYS),
+        ...collectContextLines(fields, ["hours_by_location"]).map((line) => line.split(":")[0]?.trim()).filter(Boolean),
+        ...collectContextLines(fields, ["special_hours"]).map((line) => line.split(":")[0]?.trim()).filter(Boolean),
+        ...mapCandidates.map((candidate) => candidate.name),
+    ]
+        .map((line) => cleanLocationLabel(line))
+        .filter(Boolean);
+
+    const uniqueNames = Array.from(new Set(nameLines));
+    if (!uniqueNames.length) return [];
+
+    const drafts = new Map<string, SuggestedLocationDraft>();
+    uniqueNames.forEach((name) => drafts.set(name, {
+        name,
+        references: new Set<string>(),
+    }));
+
+    const addresses = collectContextLines(fields, LOCATION_ADDRESS_SOURCE_KEYS);
+    const references = collectContextLines(fields, LOCATION_REFERENCE_SOURCE_KEYS);
+    const hoursLines = collectContextLines(fields, LOCATION_HOURS_SOURCE_KEYS);
+
+    const assignSequential = (lines: string[], assign: (draft: SuggestedLocationDraft, line: string) => void) => {
+        const pending = [...drafts.values()].filter((draft) => !draft.address);
+        if (lines.length === pending.length) {
+            lines.forEach((line, index) => {
+                const draft = pending[index];
+                if (draft) assign(draft, line);
+            });
+        }
+    };
+
+    addresses.forEach((line) => {
+        const name = matchLocationName(line, uniqueNames);
+        if (!name) return;
+        const draft = drafts.get(name);
+        if (draft && !draft.address) draft.address = line.trim();
+    });
+    assignSequential(addresses.filter((line) => !matchLocationName(line, uniqueNames)), (draft, line) => {
+        draft.address = line.trim();
+    });
+
+    references.forEach((line) => {
+        const matchingName = matchLocationName(line, uniqueNames);
+        if (matchingName) {
+            drafts.get(matchingName)?.references.add(line.trim());
+        }
+    });
+
+    hoursLines.forEach((line) => {
+        const [rawName, ...rest] = line.split(":");
+        const explicitName = cleanLocationLabel(rawName || "");
+        const hoursText = rest.join(":").trim();
+        const matchingName = explicitName && drafts.has(explicitName) ? explicitName : matchLocationName(line, uniqueNames);
+        if (matchingName && hoursText) {
+            const draft = drafts.get(matchingName);
+            if (draft) draft.hoursText = draft.hoursText ? `${draft.hoursText}\n${hoursText}` : hoursText;
+        }
+    });
+
+    mapCandidates.forEach((candidate, index) => {
+        const matchingName = matchLocationName(candidate.name, uniqueNames)
+            || matchLocationName(candidate.rawText, uniqueNames);
+        const draft = matchingName ? drafts.get(matchingName) : [...drafts.values()][index];
+        if (!draft) return;
+
+        if (!draft.googleMapsUrl) draft.googleMapsUrl = candidate.googleMapsUrl;
+        if (!draft.address && candidate.address) draft.address = candidate.address.trim();
+        if (!draft.hoursText && candidate.hoursText) draft.hoursText = candidate.hoursText;
+        if (candidate.rawText) draft.references.add(candidate.rawText);
+    });
+
+    return [...drafts.values()].map((draft) => {
+        const parsedSchedule = parseWeeklyHoursFromText(draft.hoursText || "");
+        return {
+            name: draft.name,
+            address: draft.address || "",
+            hours: draft.hoursText || "",
+            weeklyHours: parsedSchedule.weeklyHours,
+            scheduleNotes: parsedSchedule.scheduleNotes,
+            googleMapsUrl: draft.googleMapsUrl || "",
+            appointmentTimezone: "",
+            status: "suggested" as const,
+            references: [...draft.references].map((value) => ({
+                referenceType: "phrase" as const,
+                value,
+                confidence: "medium" as const,
+            })),
+        };
+    }).filter((draft) => draft.name.trim() || draft.address.trim() || draft.googleMapsUrl.trim());
+};
+
+export const formatWeeklyHours = (weeklyHours: BreWeeklyHourV1[], notes?: string | null) => {
+    const enabled = weeklyHours.filter((item) => item.enabled);
+    const lines = enabled.map((item) => `${WEEKDAY_LABELS[item.day]}: ${item.startTime} - ${item.endTime}`);
+    const cleanNotes = notes?.trim();
+    return [...lines, ...(cleanNotes ? [`Notas: ${cleanNotes}`] : [])].join("\n");
+};
+
+export const validateLocations = (locations: BreLocationV1[]) => {
+    const errors: string[] = [];
+    if (!locations.length) errors.push("Agrega al menos una sede real.");
+    locations.forEach((location, index) => {
+        if (!location.name.trim()) errors.push(`La sede ${index + 1} requiere nombre.`);
+        if (!location.address.trim()) errors.push(`La sede ${index + 1} requiere ubicación.`);
+        const weeklyHours = location.weeklyHours || [];
+        const enabled = weeklyHours.filter((item) => item.enabled);
+        if (weeklyHours.length > 0) {
+            if (!enabled.length) errors.push(`La sede ${index + 1} requiere al menos un día de atención.`);
+            enabled.forEach((item) => {
+                if (!isTime(item.startTime) || !isTime(item.endTime)) errors.push(`${WEEKDAY_LABELS[item.day]} de la sede ${index + 1} tiene un horario inválido.`);
+                if (item.startTime >= item.endTime) errors.push(`${WEEKDAY_LABELS[item.day]} de la sede ${index + 1} debe terminar después de iniciar.`);
+            });
+        } else if (!location.hours.trim()) {
+            errors.push(`La sede ${index + 1} requiere horario.`);
+        }
+    });
+    return errors;
+};
+
+export const validateAgendaConfig = (
+    agenda: BreAgendaConfigV1 | null | undefined,
+    objective: BreOperationalObjective | null | undefined = "meetings",
+) => {
+    const errors: string[] = [];
+    const isAppointments = objective === "appointments";
+    if (!isAppointments) {
+        if (!agenda?.timezone?.trim()) {
+            errors.push("La zona horaria es obligatoria.");
+        } else if (!isValidIanaTimezone(agenda.timezone)) {
+            errors.push("La zona horaria debe estar en formato IANA, por ejemplo America/Guayaquil o Europe/Madrid.");
+        }
+    }
+    if (![15, 30, 60].includes(Number(agenda?.startIntervalMinutes))) errors.push("El intervalo debe ser 15, 30 o 60 minutos.");
+    if (isAppointments) {
+        if (!Number.isFinite(agenda?.capacityPerSlot) || Number(agenda?.capacityPerSlot) < 0) errors.push("Los cupos por bloque deben ser cero o mayores.");
+    } else {
+        if (![15, 30, 60, 120].includes(Number(agenda?.durationMinutes))) errors.push("La duración debe ser 15, 30, 60 o 120 minutos.");
+        if (!Number.isFinite(agenda?.capacityPerSlot) || Number(agenda?.capacityPerSlot) <= 0) errors.push("Los cupos por bloque deben ser mayores que cero.");
+    }
+    const enabled = agenda?.weeklyHours?.filter((item) => item.enabled) || [];
+    if (!enabled.length) errors.push("Activa al menos un día de atención.");
+    enabled.forEach((item) => {
+        if (!isTime(item.startTime) || !isTime(item.endTime)) errors.push(`${WEEKDAY_LABELS[item.day]} tiene un horario inválido.`);
+        if (item.startTime >= item.endTime) errors.push(`${WEEKDAY_LABELS[item.day]} debe terminar después de iniciar.`);
+    });
+    return errors;
+};
+
+export const validateLeadCaptureFields = (fields: BreLeadCaptureFieldV1[], objective: BreOperationalObjective | null | undefined) => {
+    const errors: string[] = [];
+    const enabled = fields.filter((field) => field.enabled);
+    if (!enabled.length) errors.push("Activa al menos un dato para capturar.");
+    enabled.forEach((field) => {
+        if (!field.label.trim()) errors.push("Cada campo activo necesita una etiqueta visible.");
+        if (field.fieldKey === "custom" && !field.customKey?.trim()) errors.push("El campo personalizado necesita una clave interna.");
+    });
+    return errors;
+};
+
+export const validateStylePreference = (style: BreStylePreferenceV1 | null | undefined) => {
+    if (!style || !["moderate", "none", "commercial_only"].includes(style.emojiMode)) {
+        return ["Selecciona una preferencia de emojis."];
+    }
+    return [];
 };
